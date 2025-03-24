@@ -128,7 +128,7 @@ func (corer *Core) generatorBlock(round int) *Block {
 			if round == 0 {
 				block = &Block{
 					Author:    corer.nodeID,
-					Round:     round,
+					Height:    round,
 					Batch:     corer.txpool.GetBatch(),
 					Reference: make(map[crypto.Digest]NodeID),
 				}
@@ -137,7 +137,7 @@ func (corer *Core) generatorBlock(round int) *Block {
 				if len(reference) >= corer.committee.HightThreshold() {
 					block = &Block{
 						Author:    corer.nodeID,
-						Round:     round,
+						Height:    round,
 						Batch:     corer.txpool.GetBatch(),
 						Reference: reference,
 					}
@@ -149,7 +149,7 @@ func (corer *Core) generatorBlock(round int) *Block {
 				reference := corer.localDAG.GetRoundReceivedBlock(round - 1)
 				block = &Block{
 					Author:    corer.nodeID,
-					Round:     round,
+					Height:    round,
 					Batch:     corer.txpool.GetBatch(),
 					Reference: reference,
 				}
@@ -161,7 +161,7 @@ func (corer *Core) generatorBlock(round int) *Block {
 		corer.proposedFlag[round] = struct{}{}
 		if block.Batch.Txs != nil {
 			//BenchMark Log
-			logger.Info.Printf("create Block round %d node %d batch_id %d \n", block.Round, block.Author, block.Batch.ID)
+			logger.Info.Printf("create Block round %d node %d batch_id %d \n", block.Height, block.Author, block.Batch.ID)
 		}
 	}
 
@@ -248,7 +248,7 @@ func (corer *Core) handlePBCPropose(propose *PBCProposeMsg) error {
 	}
 
 	//Step 4
-	corer.handleOutPut(propose.B.Round, propose.B.Author, propose.B.Hash(), propose.B.Reference)
+	corer.handleOutPut(propose.B.Height, propose.B.Author, propose.B.Hash(), propose.B.Reference)
 
 	return nil
 }
@@ -372,14 +372,14 @@ func (corer *Core) handleReplyBlock(reply *ReplyBlockMsg) error {
 	}
 
 	for _, block := range reply.Blocks {
-		if block.Round%WaveRound == 0 {
-			corer.localDAG.UpdateGrade(block.Round, int(block.Author), GradeOne)
+		if block.Height%WaveRound == 0 {
+			corer.localDAG.UpdateGrade(block.Height, int(block.Author), GradeOne)
 		}
 
 		//maybe execute more one
 		storeBlock(corer.store, block)
 
-		corer.handleOutPut(block.Round, block.Author, block.Hash(), block.Reference)
+		corer.handleOutPut(block.Height, block.Author, block.Hash(), block.Reference)
 	}
 
 	go corer.retriever.processReply(reply)
@@ -388,14 +388,14 @@ func (corer *Core) handleReplyBlock(reply *ReplyBlockMsg) error {
 }
 
 func (corer *Core) handleLoopBack(block *Block) error {
-	logger.Debug.Printf("procesing block loop back round %d node %d \n", block.Round, block.Author)
+	logger.Debug.Printf("procesing block loop back round %d node %d \n", block.Height, block.Author)
 
 	//GRBC round
-	if block.Round%WaveRound == 0 {
-		instance := corer.getGRBCInstance(block.Author, block.Round)
+	if block.Height%WaveRound == 0 {
+		instance := corer.getGRBCInstance(block.Author, block.Height)
 		go instance.processPropose(block)
 	} else {
-		return corer.handleOutPut(block.Round, block.Author, block.Hash(), block.Reference)
+		return corer.handleOutPut(block.Height, block.Author, block.Hash(), block.Reference)
 	}
 
 	return nil
@@ -417,17 +417,21 @@ func (corer *Core) handleCallBack(req *callBackReq) error {
 	return nil
 }
 
+func (corer *Core) start() {
+	block := corer.generatorBlock(0)
+	if propose, err := NewGRBCProposeMsg(corer.nodeID, 0, block, corer.sigService); err != nil {
+		logger.Error.Println(err)
+		panic(err)
+	} else {
+		corer.transmitor.Send(corer.nodeID, NONE, propose)
+		corer.transmitor.RecvChannel() <- propose
+	}
+}
+
 func (corer *Core) Run() {
 	if corer.nodeID >= NodeID(corer.parameters.Faults) {
-		//first propose
-		block := corer.generatorBlock(0)
-		if propose, err := NewGRBCProposeMsg(corer.nodeID, 0, block, corer.sigService); err != nil {
-			logger.Error.Println(err)
-			panic(err)
-		} else {
-			corer.transmitor.Send(corer.nodeID, NONE, propose)
-			corer.transmitor.RecvChannel() <- propose
-		}
+		// Propose the first block.
+		corer.start()
 
 		for {
 			var err error

@@ -73,7 +73,7 @@ func (g *GRBC) processPropose(block *Block) {
 	g.reference.Store(block.Reference)
 
 	//Step 2: send echo message
-	echo, err := NewEchoMsg(g.nodeID, block.Author, digest, block.Round, g.sigService)
+	echo, err := NewEchoMsg(g.nodeID, block.Author, digest, block.Height, g.sigService)
 	if err != nil {
 		logger.Warn.Println(err)
 	}

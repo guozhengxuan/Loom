@@ -25,7 +25,7 @@ func GetBatch(batchSize int) pool.Batch {
 func GetBlock(batchSize int) *core.Block {
 	block := &core.Block{
 		Author:    -1,
-		Round:     -1,
+		Height:    -1,
 		Batch:     GetBatch(batchSize),
 		Reference: make(map[crypto.Digest]core.NodeID),
 	}

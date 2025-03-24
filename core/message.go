@@ -14,11 +14,18 @@ type ConsensusMessage interface {
 	Hash() crypto.Digest
 }
 
+type Reference struct {
+	RefHeight int64
+	RefType int
+	Content map[crypto.Digest]NodeID
+}
+
 type Block struct {
 	Author    NodeID
-	Round     int
+	Height    int
 	Batch     pool.Batch
 	Reference map[crypto.Digest]NodeID
+	
 }
 
 func (b *Block) Encode() ([]byte, error) {
@@ -41,7 +48,7 @@ func (b *Block) Hash() crypto.Digest {
 
 	hasher := crypto.NewHasher()
 	hasher.Add(strconv.AppendInt(nil, int64(b.Author), 2))
-	hasher.Add(strconv.AppendInt(nil, int64(b.Round), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(b.Height), 2))
 	for _, tx := range b.Batch.Txs {
 		hasher.Add(tx)
 	}
@@ -98,6 +105,53 @@ func (msg *GRBCProposeMsg) Hash() crypto.Digest {
 
 func (msg *GRBCProposeMsg) MsgType() int {
 	return GRBCProposeType
+}
+
+// ProposeMsg
+type ProposeMsg struct {
+	Author    NodeID
+	Round     int
+	B         *Block
+	Signature crypto.Signature
+}
+
+func NewProposeMsg(
+	Author NodeID,
+	Round int,
+	B *Block,
+	sigService *crypto.SigService,
+) (*ProposeMsg, error) {
+
+	msg := &ProposeMsg{
+		Author: Author,
+		Round:  Round,
+		B:      B,
+	}
+
+	if sig, err := sigService.RequestSignature(msg.Hash()); err != nil {
+		return nil, err
+	} else {
+		msg.Signature = sig
+		return msg, nil
+	}
+}
+
+func (msg *ProposeMsg) Verify(committee Committee) bool {
+	return msg.Signature.Verify(committee.Name(msg.Author), msg.Hash())
+}
+
+func (msg *ProposeMsg) Hash() crypto.Digest {
+
+	hasher := crypto.NewHasher()
+	hasher.Add(strconv.AppendInt(nil, int64(msg.Author), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(msg.Round), 2))
+	digest := msg.B.Hash()
+	hasher.Add(digest[:])
+	return hasher.Sum256(nil)
+}
+
+func (msg *ProposeMsg) MsgType() int {
+	return ProposeType
 }
 
 // EchoMsg
@@ -376,6 +430,7 @@ func (msg *LoopBackMsg) MsgType() int {
 
 const (
 	GRBCProposeType int = iota
+	ProposeType
 	EchoType
 	ReadyType
 	ElectType
@@ -384,6 +439,12 @@ const (
 	ReplyBlockType
 	LoopBackType
 	TotalNums
+)
+
+const (
+	Plain int = iota
+	WeakRef
+	StrongRef
 )
 
 var DefaultMsgTypes = map[int]reflect.Type{

@@ -182,7 +182,7 @@ func (c *Commitor) run() {
 			} else {
 				if block.Batch.Txs != nil {
 					//BenchMark Log
-					logger.Info.Printf("commit Block round %d node %d batch_id %d \n", block.Round, block.Author, block.Batch.ID)
+					logger.Info.Printf("commit Block round %d node %d batch_id %d \n", block.Height, block.Author, block.Batch.ID)
 				}
 				c.commitChannel <- block
 			}
