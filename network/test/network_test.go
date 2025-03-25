@@ -24,7 +24,7 @@ func TestNetwork(t *testing.T) {
 		go func(ind int) {
 			defer wg.Done()
 			msg := &network.NetMessage{
-				Msg: &core.EchoMsg{
+				Msg: &core.Echo{
 					Author:   1,
 					Proposer: 1,
 				},
@@ -35,7 +35,7 @@ func TestNetwork(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		msg := receiver.Recv().(*core.EchoMsg)
+		msg := receiver.Recv().(*core.Echo)
 		t.Logf("Messsage type: %d Data: %#v\n", msg.MsgType(), msg)
 	}
 	wg.Wait()

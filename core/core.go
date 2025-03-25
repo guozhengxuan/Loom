@@ -9,31 +9,22 @@ import (
 	"time"
 )
 
-const (
-	WaveRound = 2
-	GradeOne  = 1
-	GradeTwo  = 2
-)
-
 type Core struct {
-	nodeID              NodeID
-	round               int
-	committee           Committee
-	parameters          Parameters
-	txpool              *pool.Pool
-	transmitor          *Transmitor
-	sigService          *crypto.SigService
-	store               *store.Store
-	retriever           *Retriever
-	eletor              *Elector
-	commitor            *Commitor
-	localDAG            *LocalDAG
-	loopBackChannel     chan *Block
-	grbcCallBackChannel chan *callBackReq
-	commitChannel       chan<- *Block
-	proposedNotify      map[int]*sync.Mutex
-	proposedFlag        map[int]struct{}
-	grbcInstances       map[int]map[NodeID]*GRBC
+	nodeID          NodeID
+	committee       Committee
+	parameters      Parameters
+	txpool          *pool.Pool
+	transmitor      *Transmitor
+	sigService      *crypto.SigService
+	store           *store.Store
+	retriever       *Retriever
+	eletor          *Elector
+	commitor        *Commitor
+	localDAG        *LocalDAG
+	loopBackChannel chan *Block
+	commitChannel   chan<- *Block
+	proposedNotify  map[int]*sync.Mutex
+	echoAg          map[int]*EchoAggregator
 }
 
 func NewCore(
@@ -48,23 +39,19 @@ func NewCore(
 ) *Core {
 
 	loopBackChannel := make(chan *Block, 1_000)
-	grbcCallBackChannel := make(chan *callBackReq, 1_000)
 	corer := &Core{
-		nodeID:              nodeID,
-		committee:           committee,
-		round:               0,
-		parameters:          parameters,
-		txpool:              txpool,
-		transmitor:          transmitor,
-		sigService:          sigService,
-		store:               store,
-		loopBackChannel:     loopBackChannel,
-		grbcCallBackChannel: grbcCallBackChannel,
-		commitChannel:       commitChannel,
-		proposedNotify:      make(map[int]*sync.Mutex),
-		grbcInstances:       make(map[int]map[NodeID]*GRBC),
-		localDAG:            NewLocalDAG(),
-		proposedFlag:        make(map[int]struct{}),
+		nodeID:          nodeID,
+		committee:       committee,
+		parameters:      parameters,
+		txpool:          txpool,
+		transmitor:      transmitor,
+		sigService:      sigService,
+		store:           store,
+		loopBackChannel: loopBackChannel,
+		commitChannel:   commitChannel,
+		proposedNotify:  make(map[int]*sync.Mutex),
+		localDAG:        NewLocalDAG(),
+		echoAg:          make(map[int]*EchoAggregator),
 	}
 
 	corer.retriever = NewRetriever(nodeID, store, transmitor, sigService, parameters, loopBackChannel)
@@ -96,228 +83,89 @@ func getBlock(store *store.Store, digest crypto.Digest) (*Block, error) {
 	return block, nil
 }
 
-func (corer *Core) getGRBCInstance(node NodeID, round int) *GRBC {
-	instances := corer.grbcInstances[round]
-	if instances == nil {
-		instances = make(map[NodeID]*GRBC)
-	}
-	if _, ok := instances[node]; !ok {
-		instances[node] = NewGRBC(corer, node, round, corer.grbcCallBackChannel)
-	}
-	corer.grbcInstances[round] = instances
-	return instances[node]
-}
-
 func (corer *Core) checkReference(block *Block) (bool, []crypto.Digest) {
 	var temp []crypto.Digest
-	for d := range block.Reference {
+	for d := range block.Ref.Content {
 		temp = append(temp, d)
 	}
 	ok, missDeigest := corer.localDAG.IsReceived(temp...)
 	return ok, missDeigest
 }
 
-/*********************************Protocol***********************************************/
-func (corer *Core) generatorBlock(round int) *Block {
-	logger.Debug.Printf("procesing generatorBlock round %d \n", round)
+func (corer *Core) generatorBlock(height, refRound int) (*Block, error) {
+	logger.Debug.Printf("procesing generatorBlock height %d round %d \n", height, refRound)
 
-	var block *Block
-	if _, ok := corer.proposedFlag[round]; !ok {
-		// GRBC round
-		if round%WaveRound == 0 {
-			if round == 0 {
-				block = &Block{
-					Author:    corer.nodeID,
-					Height:    round,
-					Batch:     corer.txpool.GetBatch(),
-					Reference: make(map[crypto.Digest]NodeID),
-				}
-			} else {
-				reference := corer.localDAG.GetRoundReceivedBlock(round - 1)
-				if len(reference) >= corer.committee.HightThreshold() {
-					block = &Block{
-						Author:    corer.nodeID,
-						Height:    round,
-						Batch:     corer.txpool.GetBatch(),
-						Reference: reference,
-					}
-				}
-			}
-		} else { // PBC round
-			_, grade2nums := corer.localDAG.GetRoundReceivedBlockNums(round - 1)
-			if grade2nums >= corer.committee.HightThreshold() {
-				reference := corer.localDAG.GetRoundReceivedBlock(round - 1)
-				block = &Block{
-					Author:    corer.nodeID,
-					Height:    round,
-					Batch:     corer.txpool.GetBatch(),
-					Reference: reference,
-				}
-			}
-		}
-	}
+	ref := corer.localDAG.TakeRef(refRound)
 
-	if block != nil {
-		corer.proposedFlag[round] = struct{}{}
-		if block.Batch.Txs != nil {
-			//BenchMark Log
-			logger.Info.Printf("create Block round %d node %d batch_id %d \n", block.Height, block.Author, block.Batch.ID)
-		}
-	}
-
-	return block
+	block, err := NewBlock(corer.nodeID, height, corer.txpool.GetBatch(), ref, corer.sigService)
+	return block, err
 }
 
-func (corer *Core) handleGRBCPropose(propose *GRBCProposeMsg) error {
-	logger.Debug.Printf("procesing grbc propose round %d node %d \n", propose.Round, propose.Author)
+func (corer *Core) handlePropose(block *Block) error {
+	b := block.Abstract
+	logger.Debug.Printf("procesing propose height %d node %d \n", b.Height, b.Author)
 
-	//Step 1: verify signature
-	if !propose.Verify(corer.committee) {
-		return ErrSignature(propose.MsgType(), propose.Round, int(propose.Author))
+	// Verify signature.
+	if !block.Verify(corer.committee) {
+		return ErrSignature(block.MsgType(), b.Height, b.Author)
 	}
 
-	//Step 2: store Block
-	if err := storeBlock(corer.store, propose.B); err != nil {
+	// Store Block.
+	if err := storeBlock(corer.store, block); err != nil {
 		return err
 	}
 
-	//Step 3: check reference
-	if ok, miss := corer.checkReference(propose.B); !ok {
+	// Check reference.
+	if ok, miss := corer.checkReference(block); !ok {
 		//retrieve miss block
-		corer.retriever.requestBlocks(miss, propose.Author, propose.B.Hash())
+		corer.retriever.requestBlocks(miss, b.Author, block.Abstract.Digest)
 
-		return ErrReference(propose.MsgType(), propose.Round, int(propose.Author))
+		return ErrReference(block.MsgType(), b.Height, b.Author)
 	}
 
-	//Step 4: process
-	instance := corer.getGRBCInstance(propose.Author, propose.Round)
-	go instance.processPropose(propose.B)
+	// Add to local DAG.
+	corer.addToDAG(block)
+
+	// Send echo.
+	echo, err := NewEcho(corer.nodeID, block, corer.sigService)
+	if err != nil {
+		logger.Warn.Println(err)
+	}
+	corer.transmitor.Send(corer.nodeID, b.Author, echo)
 
 	return nil
 }
 
-func (corer *Core) handleEcho(echo *EchoMsg) error {
-	logger.Debug.Printf("procesing grbc echo round %d node %d \n", echo.Round, echo.Proposer)
+func (corer *Core) addToDAG(block *Block) error {
+	return nil
+}
 
-	//Step 1: verify signature
+func (corer *Core) handleEcho(echo *Echo) error {
+	b := echo.BlockAbstract
+	logger.Debug.Printf("procesing echo height %d node %d \n", b.Height, b.Author)
+
+	// Verify signature
 	if !echo.Verify(corer.committee) {
-		return ErrSignature(echo.MsgType(), echo.Round, int(echo.Author))
+		return ErrSignature(echo.MsgType(), b.Height, b.Author)
 	}
 
-	instance := corer.getGRBCInstance(echo.Proposer, echo.Round)
-	go instance.processEcho(echo)
-
-	return nil
-}
-
-func (corer *Core) handleReady(ready *ReadyMsg) error {
-	logger.Debug.Printf("procesing grbc ready round %d node %d \n", ready.Round, ready.Proposer)
-
-	//Step 1: verify signature
-	if !ready.Verify(corer.committee) {
-		return ErrSignature(ready.MsgType(), ready.Round, int(ready.Author))
+	// Aggregate.
+	ag := corer.echoAg[b.Height]
+	if ag == nil {
+		ag = NewEchoAggregator(corer.committee.HightThreshold())
+		corer.echoAg[b.Height] = ag
 	}
-
-	instance := corer.getGRBCInstance(ready.Proposer, ready.Round)
-	go instance.processReady(ready)
-
-	return nil
-}
-
-func (corer *Core) handlePBCPropose(propose *PBCProposeMsg) error {
-	logger.Debug.Printf("procesing pbc propose round %d node %d \n", propose.Round, propose.Author)
-
-	//Step 1: verify signature
-	if !propose.Verify(corer.committee) {
-		return ErrSignature(propose.MsgType(), propose.Round, int(propose.Author))
-	}
-
-	//Step 2: store Block
-	if err := storeBlock(corer.store, propose.B); err != nil {
-		return err
-	}
-
-	// Step 3: check reference
-	if ok, miss := corer.checkReference(propose.B); !ok {
-		//retrieve miss block
-		corer.retriever.requestBlocks(miss, propose.Author, propose.B.Hash())
-
-		if (propose.Round-1)%WaveRound != 0 { //如果前一轮是一个PB Round，必须等收到区块后开始投票
-			return ErrReference(propose.MsgType(), propose.Round, int(propose.Author))
-		}
-	}
-
-	//Step 4
-	corer.handleOutPut(propose.B.Height, propose.B.Author, propose.B.Hash(), propose.B.Reference)
-
-	return nil
-}
-
-func (corer *Core) handleOutPut(round int, node NodeID, digest crypto.Digest, references map[crypto.Digest]NodeID) error {
-	logger.Debug.Printf("procesing output round %d node %d \n", round, node)
-
-	corer.localDAG.ReceiveBlock(round, node, digest, references)
-
-	if n, grade2nums := corer.localDAG.GetRoundReceivedBlockNums(round); n >= corer.committee.HightThreshold() {
-		if round%WaveRound == 0 {
-			if grade2nums >= corer.committee.HightThreshold() {
-				if _, ok := corer.proposedNotify[round+1]; !ok {
-					corer.proposedNotify[round+1] = &sync.Mutex{} // first
-					//timeout
-					time.AfterFunc(time.Millisecond*time.Duration(corer.parameters.NetwrokDelay), func() {
-						mu := corer.proposedNotify[round+1]
-						if mu.TryLock() {
-							corer.advanceRound(round + 1)
-						}
-					})
-				}
-				if grade2nums == corer.committee.Size() {
-					mu := corer.proposedNotify[round+1] // second
-					if mu.TryLock() {
-						corer.advanceRound(round + 1)
-					}
-				}
-			}
-
-		} else {
-			return corer.advanceRound(round + 1)
-		}
-	}
-
-	return nil
-}
-
-func (corer *Core) advanceRound(round int) error {
-
-	logger.Debug.Printf("procesing advance round %d \n", round)
-
-	if block := corer.generatorBlock(round); block != nil {
-		if round%WaveRound == 0 {
-			if propose, err := NewGRBCProposeMsg(corer.nodeID, round, block, corer.sigService); err != nil {
-				return err
-			} else {
-				corer.transmitor.Send(corer.nodeID, NONE, propose)
-				time.Sleep(time.Millisecond * time.Duration(corer.parameters.MinBlockDelay))
-				corer.transmitor.RecvChannel() <- propose
-			}
-		} else {
-			if propose, err := NewPBCProposeMsg(corer.nodeID, round, block, corer.sigService); err != nil {
-				return err
-			} else {
-				corer.transmitor.Send(corer.nodeID, NONE, propose)
-				time.Sleep(time.Millisecond * time.Duration(corer.parameters.MinBlockDelay))
-				// invoke elect phase
-				corer.transmitor.RecvChannel() <- propose
-				corer.invokeElect(round)
-			}
-		}
+	ag.push(echo)
+	if ag.ready() {
+		corer.localDAG.UpdateGrade()
 	}
 
 	return nil
 }
 
 func (corer *Core) invokeElect(round int) error {
-	if round%WaveRound == 1 {
+	// Elect a leader if we are in a strong ref round.
+	if round%2 == 0 {
 		elect, err := NewElectMsg(
 			corer.nodeID,
 			round,
@@ -332,19 +180,17 @@ func (corer *Core) invokeElect(round int) error {
 	return nil
 }
 
-func (corer *Core) handleElect(elect *ElectMsg) error {
-	logger.Debug.Printf("procesing elect wave %d node %d \n", elect.Round/WaveRound, elect.Author)
+func (corer *Core) handleElect(elect *Elect) error {
+	logger.Debug.Printf("procesing elect round %d node %d \n", elect.StrongRefRound, elect.Author)
 
 	if leader, err := corer.eletor.Add(elect); err != nil {
 		return err
 	} else if leader != NONE {
-		grade := corer.localDAG.GetGrade(elect.Round-1, int(leader))
-		logger.Debug.Printf("Elector: wave %d leader %d grade %d \n", elect.Round/WaveRound, leader, grade)
-		//is grade two?
-		if grade == GradeTwo {
-			corer.commitor.NotifyToCommit(elect.Round / WaveRound)
+		grade := corer.localDAG.GetGrade(elect.StrongRefRound-1, int(leader))
+		logger.Debug.Printf("Elector: round %d leader %d grade %d \n", elect.StrongRefRound, leader, grade)
+		if grade == 1 {
+			corer.commitor.NotifyToCommit(elect.StrongRefRound)
 		}
-
 	}
 
 	return nil
@@ -355,7 +201,7 @@ func (corer *Core) handleRequestBlock(request *RequestBlockMsg) error {
 
 	//Step 1: verify signature
 	if !request.Verify(corer.committee) {
-		return ErrSignature(request.MsgType(), -1, int(request.Author))
+		return ErrSignature(request.MsgType(), -1, request.Author)
 	}
 
 	go corer.retriever.processRequest(request)
@@ -368,7 +214,7 @@ func (corer *Core) handleReplyBlock(reply *ReplyBlockMsg) error {
 
 	//Step 1: verify signature
 	if !reply.Verify(corer.committee) {
-		return ErrSignature(reply.MsgType(), -1, int(reply.Author))
+		return ErrSignature(reply.MsgType(), -1, reply.Author)
 	}
 
 	for _, block := range reply.Blocks {
@@ -379,7 +225,7 @@ func (corer *Core) handleReplyBlock(reply *ReplyBlockMsg) error {
 		//maybe execute more one
 		storeBlock(corer.store, block)
 
-		corer.handleOutPut(block.Height, block.Author, block.Hash(), block.Reference)
+		corer.handleOutPut(block.Height, block.Author, block.Hash(), block.Ref.Succinct)
 	}
 
 	go corer.retriever.processReply(reply)
@@ -395,7 +241,7 @@ func (corer *Core) handleLoopBack(block *Block) error {
 		instance := corer.getGRBCInstance(block.Author, block.Height)
 		go instance.processPropose(block)
 	} else {
-		return corer.handleOutPut(block.Height, block.Author, block.Hash(), block.Reference)
+		return corer.handleOutPut(block.Height, block.Author, block.Hash(), block.Ref)
 	}
 
 	return nil
@@ -417,8 +263,9 @@ func (corer *Core) handleCallBack(req *callBackReq) error {
 	return nil
 }
 
-func (corer *Core) start() {
-	block := corer.generatorBlock(0)
+func (corer *Core) start() error {
+	block, err := corer.generatorBlock(0, 0)
+	
 	if propose, err := NewGRBCProposeMsg(corer.nodeID, 0, block, corer.sigService); err != nil {
 		logger.Error.Println(err)
 		panic(err)
@@ -439,17 +286,12 @@ func (corer *Core) Run() {
 			case msg := <-corer.transmitor.RecvChannel():
 				{
 					switch msg.MsgType() {
-
-					case GRBCProposeType:
-						err = corer.handleGRBCPropose(msg.(*GRBCProposeMsg))
+					case ProposeType:
+						err = corer.handlePropose(msg.(*Block))
 					case EchoType:
-						err = corer.handleEcho(msg.(*EchoMsg))
-					case ReadyType:
-						err = corer.handleReady(msg.(*ReadyMsg))
-					case PBCProposeType:
-						err = corer.handlePBCPropose(msg.(*PBCProposeMsg))
+						err = corer.handleEcho(msg.(*Echo))
 					case ElectType:
-						err = corer.handleElect(msg.(*ElectMsg))
+						err = corer.handleElect(msg.(*Elect))
 					case RequestBlockType:
 						err = corer.handleRequestBlock(msg.(*RequestBlockMsg))
 					case ReplyBlockType:
@@ -461,16 +303,10 @@ func (corer *Core) Run() {
 				{
 					err = corer.handleLoopBack(block)
 				}
-			case cbReq := <-corer.grbcCallBackChannel:
-				{
-					err = corer.handleCallBack(cbReq)
-				}
 			}
-
 			if err != nil {
 				logger.Warn.Println(err)
 			}
-
 		}
 	}
 }

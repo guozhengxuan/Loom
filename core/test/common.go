@@ -24,12 +24,12 @@ func GetBatch(batchSize int) pool.Batch {
 
 func GetBlock(batchSize int) *core.Block {
 	block := &core.Block{
-		Author:    -1,
-		Height:    -1,
-		Batch:     GetBatch(batchSize),
-		Reference: make(map[crypto.Digest]core.NodeID),
+		Author: -1,
+		Height: -1,
+		Batch:  GetBatch(batchSize),
+		Ref:    make(map[crypto.Digest]core.NodeID),
 	}
-	block.Reference[block.Hash()] = -1
+	block.Ref[block.Hash()] = -1
 	return block
 }
 
@@ -43,7 +43,7 @@ func GetMessage(Typ int, sigService *crypto.SigService) core.ConsensusMessage {
 	case core.GRBCProposeType:
 		msg, _ = core.NewGRBCProposeMsg(-1, -1, GetBlock(10), sigService)
 	case core.EchoType:
-		msg, _ = core.NewEchoMsg(-1, -1, GetDigest(), -1, sigService)
+		msg, _ = core.NewEcho(-1, -1, GetDigest(), -1, sigService)
 	case core.ReadyType:
 		msg, _ = core.NewReadyMsg(-1, -1, GetDigest(), -1, sigService)
 	case core.PBCProposeType:
@@ -67,7 +67,7 @@ func DisplayMessage(msg core.ConsensusMessage, t *testing.T) {
 		temp := msg.(*core.GRBCProposeMsg)
 		t.Logf("%v \n", temp)
 	case core.EchoType:
-		temp := msg.(*core.EchoMsg)
+		temp := msg.(*core.Echo)
 		t.Logf("%v \n", temp)
 	case core.ReadyType:
 		temp := msg.(*core.ReadyMsg)
@@ -76,7 +76,7 @@ func DisplayMessage(msg core.ConsensusMessage, t *testing.T) {
 		temp := msg.(*core.PBCProposeMsg)
 		t.Logf("%v \n", temp)
 	case core.ElectType:
-		temp := msg.(*core.ElectMsg)
+		temp := msg.(*core.Elect)
 		t.Logf("%v \n", temp)
 	case core.RequestBlockType:
 		temp := msg.(*core.RequestBlockMsg)

@@ -15,7 +15,7 @@ const (
 type reqRetrieve struct {
 	typ       int
 	reqID     int
-	digest    []crypto.Digest
+	missRefs    []crypto.Digest
 	nodeID    NodeID
 	backBlock crypto.Digest
 }
@@ -24,7 +24,7 @@ type Retriever struct {
 	nodeID          NodeID
 	transmitor      *Transmitor
 	cnt             int
-	pendding        map[crypto.Digest]struct{} //dealing request
+	pending        map[crypto.Digest]struct{} //dealing request
 	requests        map[int]*RequestBlockMsg   //Request
 	loopBackBlocks  map[int]crypto.Digest      // loopback deal block
 	loopBackCnts    map[int]int
@@ -48,11 +48,11 @@ func NewRetriever(
 	r := &Retriever{
 		nodeID:          nodeID,
 		cnt:             0,
-		pendding:        make(map[crypto.Digest]struct{}),
+		pending:        make(map[crypto.Digest]struct{}),
 		requests:        make(map[int]*RequestBlockMsg),
 		loopBackBlocks:  make(map[int]crypto.Digest),
 		loopBackCnts:    make(map[int]int),
-		reqChannel:      make(chan *reqRetrieve, 1_00),
+		reqChannel:      make(chan *reqRetrieve, 100),
 		miss2Blocks:     make(map[crypto.Digest][]int),
 		store:           store,
 		sigService:      sigService,
@@ -74,15 +74,15 @@ func (r *Retriever) run() {
 			case ReqType: //request Block
 				{
 					r.loopBackBlocks[r.cnt] = req.backBlock
-					r.loopBackCnts[r.cnt] = len(req.digest)
+					r.loopBackCnts[r.cnt] = len(req.missRefs)
 					var missBlocks []crypto.Digest
-					for i := 0; i < len(req.digest); i++ { //filter block that dealing
-						r.miss2Blocks[req.digest[i]] = append(r.miss2Blocks[req.digest[i]], r.cnt)
-						if _, ok := r.pendding[req.digest[i]]; ok {
+					for i := 0; i < len(req.missRefs); i++ { //filter block that dealing
+						r.miss2Blocks[req.missRefs[i]] = append(r.miss2Blocks[req.missRefs[i]], r.cnt)
+						if _, ok := r.pending[req.missRefs[i]]; ok {
 							continue
 						}
-						missBlocks = append(missBlocks, req.digest[i])
-						r.pendding[req.digest[i]] = struct{}{}
+						missBlocks = append(missBlocks, req.missRefs[i])
+						r.pending[req.missRefs[i]] = struct{}{}
 					}
 
 					if len(missBlocks) > 0 {
@@ -106,7 +106,7 @@ func (r *Retriever) run() {
 									go r.loopBack(r.loopBackBlocks[id])
 								}
 							}
-							delete(r.pendding, d) // delete
+							delete(r.pending, d) // delete
 						}
 						delete(r.requests, _req.ReqID) //delete request that finished
 					}
@@ -131,7 +131,7 @@ func (r *Retriever) run() {
 func (r *Retriever) requestBlocks(digest []crypto.Digest, nodeid NodeID, backBlock crypto.Digest) {
 	req := &reqRetrieve{
 		typ:       ReqType,
-		digest:    digest,
+		missRefs:    digest,
 		nodeID:    nodeid,
 		backBlock: backBlock,
 	}

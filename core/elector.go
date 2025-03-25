@@ -5,14 +5,14 @@ import (
 	"sync"
 )
 
-type Aggregator struct {
-	elects []*ElectMsg
+type ElectAggregator struct {
+	elects []*Elect
 	used   map[NodeID]struct{}
 }
 
-func (a *Aggregator) Append(elect *ElectMsg, committee Committee, sigService *crypto.SigService) (NodeID, error) {
+func (a *ElectAggregator) Append(elect *Elect, committee Committee, sigService *crypto.SigService) (NodeID, error) {
 	if _, ok := a.used[elect.Author]; ok {
-		return NONE, ErrUsedElect(ElectType, elect.Round, int(elect.Author))
+		return NONE, ErrUsedElect(ElectType, elect.StrongRefRound, elect.Author)
 	} else {
 		a.used[elect.Author] = struct{}{}
 		a.elects = append(a.elects, elect)
@@ -38,7 +38,7 @@ func (a *Aggregator) Append(elect *ElectMsg, committee Committee, sigService *cr
 type Elector struct {
 	mu         *sync.RWMutex
 	leaders    map[int]NodeID
-	aggregator map[int]*Aggregator
+	aggregator map[int]*ElectAggregator
 	sigService *crypto.SigService
 	committee  Committee
 }
@@ -47,20 +47,20 @@ func NewElector(sigService *crypto.SigService, committee Committee) *Elector {
 	return &Elector{
 		mu:         &sync.RWMutex{},
 		leaders:    make(map[int]NodeID),
-		aggregator: make(map[int]*Aggregator),
+		aggregator: make(map[int]*ElectAggregator),
 		sigService: sigService,
 		committee:  committee,
 	}
 }
 
-func (e *Elector) Add(elect *ElectMsg) (NodeID, error) {
+func (e *Elector) Add(elect *Elect) (NodeID, error) {
 
-	waveNum := elect.Round / WaveRound
+	waveNum := elect.StrongRefRound / WaveRound
 	a, ok := e.aggregator[waveNum]
 	if !ok {
-		a = &Aggregator{
+		a = &ElectAggregator{
 			used:   make(map[NodeID]struct{}),
-			elects: make([]*ElectMsg, 0),
+			elects: make([]*Elect, 0),
 		}
 		e.aggregator[waveNum] = a
 	}

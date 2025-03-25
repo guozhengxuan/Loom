@@ -29,7 +29,7 @@ func NewLocalDAG() *LocalDAG {
 	}
 }
 
-// IsReceived: digests is received ?
+// Check for missing digests.
 func (local *LocalDAG) IsReceived(digests ...crypto.Digest) (bool, []crypto.Digest) {
 	local.muBlock.RLock()
 	defer local.muBlock.RUnlock()
@@ -64,6 +64,10 @@ func (local *LocalDAG) ReceiveBlock(round int, node NodeID, digest crypto.Digest
 	eslot[node] = references
 
 	local.muDAG.Unlock()
+}
+
+func (local *LocalDAG) TakeRef(round int) Ref {
+	return Ref{}
 }
 
 func (local *LocalDAG) GetRoundReceivedBlockNums(round int) (nums, grade2nums int) {

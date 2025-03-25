@@ -3,15 +3,15 @@ package core
 import "fmt"
 
 var (
-	ErrSignature = func(msgTyp, round, node int) error {
+	ErrSignature = func(msgTyp, round int, node NodeID) error {
 		return fmt.Errorf("[type-%d-round-%d-node-%d] message signature verify error", msgTyp, round, node)
 	}
 
-	ErrReference = func(msgTyp, round, node int) error {
+	ErrReference = func(msgTyp, round int, node NodeID) error {
 		return fmt.Errorf("[type-%d-round-%d-node-%d] not receive all block reference ", msgTyp, round, node)
 	}
 
-	ErrUsedElect = func(msgTyp, round, node int) error {
+	ErrUsedElect = func(msgTyp, round int, node NodeID) error {
 		return fmt.Errorf("[type-%d-round-%d-node-%d] receive one more elect msg from %d ", msgTyp, round, node, node)
 	}
 )
