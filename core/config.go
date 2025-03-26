@@ -2,6 +2,12 @@ package core
 
 import "WuKong/crypto"
 
+const (
+	GradeZero = 0
+	GradeOne = 1
+	GradeTwo = 2
+)
+
 type Parameters struct {
 	SyncTimeout   int  `json:"sync_timeout"`
 	NetwrokDelay  int  `json:"network_delay"`

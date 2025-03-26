@@ -1,75 +1,96 @@
 package core
 
-import "WuKong/crypto"
+import (
+	"WuKong/crypto"
+	"sync"
+)
 
-type Aggregator interface {
-	push()
-	ready() bool 
+type aggregator struct {
+	item      []Message
+	used      map[NodeID]struct{}
+	committee *Committee
 }
 
-type EchoAggregator struct {
-	votes []*Message
-	used map[NodeID]struct{}
-	handled bool
-	threshold int
-}
-
-func NewEchoAggregator(threshold int) *EchoAggregator {
-	aggregator := &EchoAggregator{
-		used: make(map[NodeID]struct{}),
-		threshold: threshold,
+func NewAggregator(committee *Committee) *aggregator {
+	ag := &aggregator{
+		used:      make(map[NodeID]struct{}),
+		committee: committee,
 	}
-	return aggregator
+	return ag
 }
 
-func (ag *EchoAggregator) push(echo *Message) {
-	if _, ok := ag.used[echo.Author]; ok {
+func (ag *aggregator) push(author NodeID, msg Message) {
+	if _, ok := ag.used[author]; ok {
 		return
 	}
-	ag.used[echo.Author] = struct{}{}
-	ag.votes = append(ag.votes, echo)
+	ag.used[author] = struct{}{}
+	ag.item = append(ag.item, msg)
 }
 
-func (ag *EchoAggregator) ready() bool {
-	if !ag.handled && len(ag.votes) == ag.threshold {
-		ag.handled = true
-		return true
+func (ag *aggregator) take() []Message {
+	if len(ag.item) == ag.committee.HightThreshold() {
+		return ag.item
 	}
-	return false
+	return nil
 }
 
-type ElectAggregator struct {
-	shares []*Elect
-	used map[NodeID]struct{}
-	handled bool
-	threshold int
+type Elector struct {
+	mu         *sync.RWMutex
+	leader     map[int]NodeID
+	ag         map[int]*aggregator
+	sigService *crypto.SigService
+	committee  Committee
 }
 
-func (ag *ElectAggregator) push(echo *Elect) {
-	
-}
-
-func (ag *ElectAggregator) Append(elect *Elect, committee Committee, sigService *crypto.SigService) (NodeID, error) {
-	if _, ok := ag.used[elect.Author]; ok {
-		return NONE, ErrUsedElect(ElectType, elect.StrongRefRound, elect.Author)
-	} else {
-		ag.used[elect.Author] = struct{}{}
-		ag.elects = append(ag.elects, elect)
-		if len(ag.elects) == committee.HightThreshold() {
-			var shares []crypto.SignatureShare
-			for _, e := range ag.elects {
-				shares = append(shares, e.SigShare)
-			}
-			qc, err := crypto.CombineIntactTSPartial(shares, sigService.ShareKey, elect.Hash())
-			if err != nil {
-				return NONE, err
-			}
-			var randint NodeID = 0
-			for i := 0; i < 4; i++ {
-				randint = randint<<8 + NodeID(qc[i])
-			}
-			return randint % NodeID(committee.Size()), nil
-		}
+func NewElector(sigService *crypto.SigService, committee Committee) *Elector {
+	return &Elector{
+		mu:         &sync.RWMutex{},
+		leader:     make(map[int]NodeID),
+		ag:         make(map[int]*aggregator),
+		sigService: sigService,
+		committee:  committee,
 	}
-	return NONE, nil
+}
+
+func (e *Elector) add(elect *Elect) error {
+	round := elect.RefRound
+
+	e.mu.Lock()
+	defer e.mu.RUnlock()
+
+	a, ok := e.ag[round]
+	if !ok {
+		a = NewAggregator(&e.committee)
+		e.ag[round] = a
+	}
+
+	msg := e.ag[round].take()
+	if len(msg) == 0 {
+		return nil
+	}
+
+	shares := make([]crypto.SignatureShare, len(msg))
+	sig, err := crypto.CombineIntactTSPartial(shares, e.sigService.ShareKey, elect.Hash())
+	if err != nil {
+		return err
+	}
+
+	var seed NodeID = 0
+	for i := 0; i < 4; i++ {
+		seed = seed<<8 + NodeID(sig[i])
+	}
+	id := seed % NodeID(e.committee.Size())
+
+	e.leader[round] = id
+
+	return nil
+}
+
+func (e *Elector) getLeader(refRound int) (bool, NodeID) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if leader, ok := e.leader[refRound]; ok {
+		return true, leader
+	}
+	return false, NONE
 }

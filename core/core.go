@@ -23,7 +23,7 @@ type Core struct {
 	loopBackChannel chan *Block
 	commitChannel   chan<- *Block
 	proposedNotify  map[int]*sync.Mutex
-	echoAg          map[int]*EchoAggregator
+	voteAg          map[int]*aggregator
 }
 
 func NewCore(
@@ -50,7 +50,7 @@ func NewCore(
 		commitChannel:   commitChannel,
 		proposedNotify:  make(map[int]*sync.Mutex),
 		localDAG:        NewLocalDAG(),
-		echoAg:          make(map[int]*EchoAggregator),
+		voteAg:          make(map[int]*aggregator),
 	}
 
 	corer.retriever = NewRetriever(nodeID, store, transmitor, sigService, parameters, loopBackChannel)
@@ -142,25 +142,25 @@ func (corer *Core) handleEcho(echo *Echo) error {
 	}
 
 	// Aggregate.
-	ag := corer.echoAg[echo.BlockHeight]
-	if ag == nil {
-		ag = NewEchoAggregator(corer.committee.HightThreshold())
-		corer.echoAg[echo.BlockHeight] = ag
+	ag, ok := corer.voteAg[echo.BlockHeight]
+	if !ok {
+		ag = NewAggregator(&corer.committee)
+		corer.voteAg[echo.BlockHeight] = ag
 	}
-	ag.push(echo)
-	if ag.ready() {
+	ag.push(echo.Author, echo)
+	if votes := ag.take(); len(votes) != 0 {
 		// corer.localDAG.UpdateGrade()
 	}
 
 	return nil
 }
 
-func (corer *Core) invokeElect(round int) error {
+func (corer *Core) invokeElect(refRound int) error {
 	// Elect a leader if we are in a strong ref round.
-	if round%2 == 0 {
+	if refRound%2 == 0 {
 		elect, err := NewElectMsg(
 			corer.nodeID,
-			round,
+			refRound,
 			corer.sigService,
 		)
 		if err != nil {
@@ -175,9 +175,12 @@ func (corer *Core) invokeElect(round int) error {
 func (corer *Core) handleElect(elect *Elect) error {
 	logger.Debug.Printf("procesing elect round %d node %d \n", elect.RefRound, elect.Author)
 
-	if leader, err := corer.eletor.Add(elect); err != nil {
+	if err := corer.eletor.add(elect); err != nil {
 		return err
-	} else if leader != NONE {
+	}
+
+	ok, leader := corer.eletor.getLeader(elect.RefRound)
+	if ok{
 		grade := corer.localDAG.GetGrade(elect.RefRound-1, int(leader))
 		logger.Debug.Printf("Elector: round %d leader %d grade %d \n", elect.RefRound, leader, grade)
 		if grade == 1 {
@@ -210,14 +213,14 @@ func (corer *Core) handleReplyBlock(reply *ReplyBlockMsg) error {
 	}
 
 	for _, block := range reply.Blocks {
-		if block.Height%WaveRound == 0 {
+		if block.Ref.Round%2 == 0 {
 			corer.localDAG.UpdateGrade(block.Height, int(block.Author), GradeOne)
 		}
 
 		//maybe execute more one
 		storeBlock(corer.store, block)
 
-		corer.handleOutPut(block.Height, block.Author, block.Hash(), block.Ref.Succinct)
+		// Add block to DAG.
 	}
 
 	go corer.retriever.processReply(reply)
@@ -228,43 +231,21 @@ func (corer *Core) handleReplyBlock(reply *ReplyBlockMsg) error {
 func (corer *Core) handleLoopBack(block *Block) error {
 	logger.Debug.Printf("procesing block loop back round %d node %d \n", block.Height, block.Author)
 
-	//GRBC round
-	if block.Height%WaveRound == 0 {
-		instance := corer.getGRBCInstance(block.Author, block.Height)
-		go instance.processPropose(block)
-	} else {
-		return corer.handleOutPut(block.Height, block.Author, block.Hash(), block.Ref)
-	}
-
-	return nil
-}
-
-func (corer *Core) handleCallBack(req *callBackReq) error {
-	logger.Debug.Printf("procesing block call back round %d node %d \n", req.round, req.nodeID)
-
-	//Update grade
-	corer.localDAG.UpdateGrade(req.round, int(req.nodeID), req.grade)
-
-	//try to advance round
-	if req.tag == UpdateGrade {
-		return corer.advanceRound(req.round + 1)
-	} else if req.tag == NotifyOutPut {
-		return corer.handleOutPut(req.round, req.nodeID, req.digest, req.reference)
-	}
+	// Add block to DAG.
 
 	return nil
 }
 
 func (corer *Core) start() error {
 	block, err := corer.generatorBlock(0, 0)
-
-	if propose, err := NewGRBCProposeMsg(corer.nodeID, 0, block, corer.sigService); err != nil {
-		logger.Error.Println(err)
-		panic(err)
-	} else {
-		corer.transmitor.Send(corer.nodeID, NONE, propose)
-		corer.transmitor.RecvChannel() <- propose
+	if err != nil {
+		return err
 	}
+
+	corer.transmitor.Send(corer.nodeID, NONE, block)
+	corer.transmitor.RecvChannel() <- block
+
+	return nil
 }
 
 func (corer *Core) Run() {

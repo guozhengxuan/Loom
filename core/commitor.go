@@ -5,21 +5,89 @@ import (
 	"WuKong/logger"
 	"WuKong/store"
 	"sync"
+
+	cmap "github.com/orcaman/concurrent-map/v2"
 )
+
+type dag struct {
+	mu      *sync.RWMutex
+	cache   cmap.ConcurrentMap[string, *Block]
+	current map[NodeID]crypto.Digest
+	track   map[int]map[NodeID]int
+}
+
+func NewDag() *dag {
+	return &dag{
+		mu:      new(sync.RWMutex),
+		cache:   cmap.New[*Block](),
+		current: make(map[NodeID]crypto.Digest),
+		track:   make(map[int]map[NodeID]int),
+	}
+}
+
+// Check for missing digests.
+func (d *dag) checkMissing(digests ...crypto.Digest) (bool, []crypto.Digest) {
+	var miss []crypto.Digest
+	flag := true
+
+	for _, hash := range digests {
+		if d.cache.Has(string(hash[:])) {
+			miss = append(miss, hash)
+			flag = false
+		}
+	}
+
+	return flag, miss
+}
+
+// Put the newly received block into local DAG.
+func (d *dag) add(block *Block) {
+	hash := block.Digest
+	d.cache.Set(string(hash[:]), block)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Update highest block.
+	if prev, ok := d.current[block.Author]; !ok || func() bool {
+		cur, _ := d.cache.Get(string(prev[:]))
+		return cur.Height < block.Height
+	}() {
+		d.current[block.Author] = hash
+	}
+
+	// Update track if ref type of the block is not plain.
+	if block.Ref.Type != Plain {
+		d.track[block.Ref.Round][block.Author] = block.Height
+	}
+}
+
+func (d *dag) selectRef(round int) (ref []crypto.Digest) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	for node, curHash := range d.current {
+		curBlock, _ := d.cache.Get(string(curHash[:]))
+		curHeight := curBlock.Height
+
+		lastRefHeight := d.track[round][node]
+
+		if round%2 == 0 && curHeight-lastRefHeight >= 2 ||
+			round%2 == 1 && curHeight-lastRefHeight >= 1 {
+			ref = append(ref, curHash)
+		}
+	}
+	return
+}
 
 type LocalDAG struct {
 	muBlock      *sync.RWMutex
 	blockDigests map[crypto.Digest]NodeID // store hash of block that has received
 	muDAG        *sync.RWMutex
-	localDAG     map[int]map[NodeID][]crypto.Digest // local DAG
+	localDAG     map[int]map[NodeID]crypto.Digest // local DAG
 	edgesDAG     map[int]map[NodeID]map[crypto.Digest]NodeID
 	muGrade      *sync.RWMutex
 	gradeDAG     map[int]map[NodeID]int
-}
-
-type DAG struct {
-	blocks map[crypto.Digest]*Block
-	
 }
 
 func NewLocalDAG() *LocalDAG {
@@ -28,7 +96,7 @@ func NewLocalDAG() *LocalDAG {
 		muDAG:        &sync.RWMutex{},
 		muGrade:      &sync.RWMutex{},
 		blockDigests: make(map[crypto.Digest]NodeID),
-		localDAG:     make(map[int]map[NodeID][]crypto.Digest),
+		localDAG:     make(map[int]map[NodeID]crypto.Digest),
 		gradeDAG:     make(map[int]map[NodeID]int),
 		edgesDAG:     make(map[int]map[NodeID]map[crypto.Digest]NodeID),
 	}
@@ -60,12 +128,12 @@ func (local *LocalDAG) ReceiveBlock(round int, node NodeID, digest crypto.Digest
 	vslot, ok := local.localDAG[round]
 	eslot := local.edgesDAG[round]
 	if !ok {
-		vslot = make(map[NodeID][]crypto.Digest)
+		vslot = make(map[NodeID]crypto.Digest)
 		eslot = make(map[NodeID]map[crypto.Digest]NodeID)
 		local.localDAG[round] = vslot
 		local.edgesDAG[round] = eslot
 	}
-	vslot[node] = append(vslot[node], digest)
+	vslot[node] = digest
 	eslot[node] = references
 
 	local.muDAG.Unlock()
@@ -82,7 +150,7 @@ func (local *LocalDAG) GetRoundReceivedBlockNums(round int) (nums, grade2nums in
 	defer local.muGrade.RUnlock()
 
 	nums = len(local.localDAG[round])
-	if round%WaveRound == 0 {
+	if round%2 == 0 {
 		for _, g := range local.gradeDAG[round] {
 			if g == GradeTwo {
 				grade2nums++
@@ -125,7 +193,7 @@ func (local *LocalDAG) GetRoundReceivedBlock(round int) (digests map[crypto.Dige
 }
 
 func (local *LocalDAG) GetGrade(round, node int) (grade int) {
-	if round%WaveRound == 0 {
+	if round%2 == 0 {
 		local.muGrade.RLock()
 		if slot, ok := local.gradeDAG[round]; !ok {
 			return 0
@@ -138,7 +206,7 @@ func (local *LocalDAG) GetGrade(round, node int) (grade int) {
 }
 
 func (local *LocalDAG) UpdateGrade(round, node, grade int) {
-	if round%WaveRound == 0 {
+	if round%2 == 0 {
 		local.muGrade.Lock()
 
 		slot, ok := local.gradeDAG[round]
@@ -200,8 +268,7 @@ func (c *Commitor) run() {
 
 	for num := range c.notify {
 		if num > c.curWave {
-			if leader := c.elector.GetLeader(num); leader != NONE {
-
+			if ok, leader := c.elector.getLeader(num); ok {
 				var leaderQ [][2]int
 				for i := 1; i <= c.N; i++ {
 					var node int = (int(leader) + i) % c.N
@@ -211,7 +278,7 @@ func (c *Commitor) run() {
 				}
 
 				for i := num - 1; i > c.curWave; i-- {
-					if node := c.elector.GetLeader(i); node != NONE {
+					if ok, node := c.elector.getLeader(i); ok {
 						leaderQ = append(leaderQ, [2]int{int(node), i * 2})
 					}
 				}
@@ -266,7 +333,7 @@ func (c *Commitor) commitLeaderQueue(q [][2]int) {
 				} //for
 
 				//next round is pbc round
-				if round%WaveRound == 0 {
+				if round%2 == 0 {
 					for j := 0; j < c.N; j++ {
 						if temp[j] != nil {
 							queue1 = append(queue1, *temp[j])
@@ -274,14 +341,14 @@ func (c *Commitor) commitLeaderQueue(q [][2]int) {
 						}
 					}
 				} else { //next round id grbc round
-					L := int(c.elector.GetLeader((round / 2)))
-					for j := 0; j < c.N; j++ {
-						ind := (L + c.N - j) % c.N
-						if temp[ind] != nil {
-							queue1 = append(queue1, *temp[ind])
-							queue2 = append(queue2, NodeID(ind))
-						}
-					}
+					// L := int(c.elector.GetLeader((round / 2)))
+					// for j := 0; j < c.N; j++ {
+					// 	ind := (L + c.N - j) % c.N
+					// 	if temp[ind] != nil {
+					// 		queue1 = append(queue1, *temp[ind])
+					// 		queue2 = append(queue2, NodeID(ind))
+					// 	}
+					// }
 				}
 				round--
 			} //for
