@@ -9,30 +9,24 @@ import (
 	"strconv"
 )
 
-type Hash = crypto.Digest
-
-type ConsensusMessage interface {
+type Message interface {
 	MsgType() int
-	Hash() Hash
+	Hash() crypto.Digest
 }
 
 type Ref struct {
-	Round   int
-	Type    int
-	Content map[Hash]Abstract
-}
-
-type Abstract struct {
-	Author NodeID
-	Height int
-	Digest Hash
+	Round int
+	Type  int
+	Item  map[crypto.Digest]NodeID
 }
 
 type Block struct {
-	Abstract Abstract
-	Batch    pool.Batch
-	Ref      Ref
-	Sig      crypto.Signature
+	Author NodeID
+	Height int
+	Batch  pool.Batch
+	Ref    Ref
+	Sig    crypto.Signature
+	Digest crypto.Digest
 }
 
 func NewBlock(
@@ -42,15 +36,15 @@ func NewBlock(
 	ref Ref,
 	sigService *crypto.SigService,
 ) (*Block, error) {
-
 	block := &Block{
-		Abstract: Abstract{Author: author, Height: height},
-		Batch:    batch,
-		Ref:      ref,
+		Author: author,
+		Height: height,
+		Batch:  batch,
+		Ref:    ref,
 	}
-	block.Abstract.Digest = block.Hash()
+	block.Digest = block.Hash()
 
-	if sig, err := sigService.RequestSignature(block.Abstract.Digest); err != nil {
+	if sig, err := sigService.RequestSignature(block.Digest); err != nil {
 		return nil, err
 	} else {
 		block.Sig = sig
@@ -75,14 +69,15 @@ func (b *Block) Decode(data []byte) error {
 }
 
 func (b *Block) Verify(committee Committee) bool {
-	return b.Sig.Verify(committee.Name(b.Abstract.Author), b.Hash())
+	digest := b.Hash()
+	return digest == b.Digest && b.Sig.Verify(committee.Name(b.Author), digest)
 }
 
 func (b *Block) Hash() crypto.Digest {
 
 	hasher := crypto.NewHasher()
-	hasher.Add(strconv.AppendInt(nil, int64(b.Abstract.Author), 2))
-	hasher.Add(strconv.AppendInt(nil, int64(b.Abstract.Height), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(b.Author), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(b.Height), 2))
 	for _, tx := range b.Batch.Txs {
 		hasher.Add(tx)
 	}
@@ -100,9 +95,11 @@ func (b *Block) MsgType() int {
 
 // Echo
 type Echo struct {
-	Author        NodeID
-	BlockAbstract Abstract
-	Sig           crypto.Signature
+	Author      NodeID
+	BlockAuthor NodeID
+	BlockDigest crypto.Digest
+	BlockHeight int
+	Sig         crypto.Signature
 }
 
 func NewEcho(
@@ -110,16 +107,18 @@ func NewEcho(
 	block *Block,
 	sigService *crypto.SigService,
 ) (*Echo, error) {
-	msg := &Echo{
-		Author:        author,
-		BlockAbstract: block.Abstract,
+	e := &Echo{
+		Author:      author,
+		BlockAuthor: block.Author,
+		BlockDigest: block.Digest,
+		BlockHeight: block.Height,
 	}
-	sig, err := sigService.RequestSignature(msg.Hash())
+	sig, err := sigService.RequestSignature(e.Hash())
 	if err != nil {
 		return nil, err
 	}
-	msg.Sig = sig
-	return msg, nil
+	e.Sig = sig
+	return e, nil
 }
 
 func (msg *Echo) Verify(committee Committee) bool {
@@ -129,9 +128,9 @@ func (msg *Echo) Verify(committee Committee) bool {
 func (msg *Echo) Hash() crypto.Digest {
 	hasher := crypto.NewHasher()
 	hasher.Add(strconv.AppendInt(nil, int64(msg.Author), 2))
-	hasher.Add(strconv.AppendInt(nil, int64(msg.BlockAbstract.Author), 2))
-	hasher.Add(msg.BlockAbstract.Digest[:])
-	hasher.Add(strconv.AppendInt(nil, int64(msg.BlockAbstract.Height), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(msg.BlockAuthor), 2))
+	hasher.Add(msg.BlockDigest[:])
+	hasher.Add(strconv.AppendInt(nil, int64(msg.BlockHeight), 2))
 	return hasher.Sum256(nil)
 }
 
@@ -141,15 +140,15 @@ func (msg *Echo) MsgType() int {
 
 // Elect
 type Elect struct {
-	Author         NodeID
-	StrongRefRound int
-	SigShare       crypto.SignatureShare
+	Author   NodeID
+	RefRound int
+	SigShare crypto.SignatureShare
 }
 
 func NewElectMsg(Author NodeID, Round int, sigService *crypto.SigService) (*Elect, error) {
 	e := &Elect{
-		Author:         Author,
-		StrongRefRound: Round,
+		Author:   Author,
+		RefRound: Round,
 	}
 	share, err := sigService.RequestTsSugnature(e.Hash())
 	if err != nil {
@@ -166,7 +165,7 @@ func (e *Elect) Verify() bool {
 
 func (e *Elect) Hash() crypto.Digest {
 	hasher := crypto.NewHasher()
-	hasher.Add(strconv.AppendInt(nil, int64(e.StrongRefRound), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(e.RefRound), 2))
 	return hasher.Sum256(nil)
 }
 

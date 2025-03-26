@@ -6,7 +6,6 @@ import (
 	"WuKong/pool"
 	"WuKong/store"
 	"sync"
-	"time"
 )
 
 type Core struct {
@@ -85,7 +84,7 @@ func getBlock(store *store.Store, digest crypto.Digest) (*Block, error) {
 
 func (corer *Core) checkReference(block *Block) (bool, []crypto.Digest) {
 	var temp []crypto.Digest
-	for d := range block.Ref.Content {
+	for d := range block.Ref.Item {
 		temp = append(temp, d)
 	}
 	ok, missDeigest := corer.localDAG.IsReceived(temp...)
@@ -102,12 +101,11 @@ func (corer *Core) generatorBlock(height, refRound int) (*Block, error) {
 }
 
 func (corer *Core) handlePropose(block *Block) error {
-	b := block.Abstract
-	logger.Debug.Printf("procesing propose height %d node %d \n", b.Height, b.Author)
+	logger.Debug.Printf("procesing propose height %d node %d \n", block.Height, block.Author)
 
 	// Verify signature.
 	if !block.Verify(corer.committee) {
-		return ErrSignature(block.MsgType(), b.Height, b.Author)
+		return ErrSignature(block.MsgType(), block.Height, block.Author)
 	}
 
 	// Store Block.
@@ -118,46 +116,40 @@ func (corer *Core) handlePropose(block *Block) error {
 	// Check reference.
 	if ok, miss := corer.checkReference(block); !ok {
 		//retrieve miss block
-		corer.retriever.requestBlocks(miss, b.Author, block.Abstract.Digest)
-
-		return ErrReference(block.MsgType(), b.Height, b.Author)
+		corer.retriever.requestBlocks(miss, block.Author, block.Digest)
+		return ErrReference(block.MsgType(), block.Height, block.Author)
 	}
-
-	// Add to local DAG.
-	corer.addToDAG(block)
 
 	// Send echo.
 	echo, err := NewEcho(corer.nodeID, block, corer.sigService)
 	if err != nil {
 		logger.Warn.Println(err)
 	}
-	corer.transmitor.Send(corer.nodeID, b.Author, echo)
+	corer.transmitor.Send(corer.nodeID, block.Author, echo)
 
-	return nil
-}
+	// Add to local DAG.
+	corer.localDAG.ReceiveBlock(block.Ref.Round, block.Author, block.Digest, block.Ref.Item)
 
-func (corer *Core) addToDAG(block *Block) error {
 	return nil
 }
 
 func (corer *Core) handleEcho(echo *Echo) error {
-	b := echo.BlockAbstract
-	logger.Debug.Printf("procesing echo height %d node %d \n", b.Height, b.Author)
+	logger.Debug.Printf("procesing echo height %d node %d \n", echo.BlockHeight, echo.Author)
 
 	// Verify signature
 	if !echo.Verify(corer.committee) {
-		return ErrSignature(echo.MsgType(), b.Height, b.Author)
+		return ErrSignature(echo.MsgType(), echo.BlockHeight, echo.Author)
 	}
 
 	// Aggregate.
-	ag := corer.echoAg[b.Height]
+	ag := corer.echoAg[echo.BlockHeight]
 	if ag == nil {
 		ag = NewEchoAggregator(corer.committee.HightThreshold())
-		corer.echoAg[b.Height] = ag
+		corer.echoAg[echo.BlockHeight] = ag
 	}
 	ag.push(echo)
 	if ag.ready() {
-		corer.localDAG.UpdateGrade()
+		// corer.localDAG.UpdateGrade()
 	}
 
 	return nil
@@ -181,15 +173,15 @@ func (corer *Core) invokeElect(round int) error {
 }
 
 func (corer *Core) handleElect(elect *Elect) error {
-	logger.Debug.Printf("procesing elect round %d node %d \n", elect.StrongRefRound, elect.Author)
+	logger.Debug.Printf("procesing elect round %d node %d \n", elect.RefRound, elect.Author)
 
 	if leader, err := corer.eletor.Add(elect); err != nil {
 		return err
 	} else if leader != NONE {
-		grade := corer.localDAG.GetGrade(elect.StrongRefRound-1, int(leader))
-		logger.Debug.Printf("Elector: round %d leader %d grade %d \n", elect.StrongRefRound, leader, grade)
+		grade := corer.localDAG.GetGrade(elect.RefRound-1, int(leader))
+		logger.Debug.Printf("Elector: round %d leader %d grade %d \n", elect.RefRound, leader, grade)
 		if grade == 1 {
-			corer.commitor.NotifyToCommit(elect.StrongRefRound)
+			corer.commitor.NotifyToCommit(elect.RefRound)
 		}
 	}
 
@@ -265,7 +257,7 @@ func (corer *Core) handleCallBack(req *callBackReq) error {
 
 func (corer *Core) start() error {
 	block, err := corer.generatorBlock(0, 0)
-	
+
 	if propose, err := NewGRBCProposeMsg(corer.nodeID, 0, block, corer.sigService); err != nil {
 		logger.Error.Println(err)
 		panic(err)

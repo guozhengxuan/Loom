@@ -37,8 +37,8 @@ func GetDigest() crypto.Digest {
 	return crypto.NewHasher().Sum256([]byte("123"))
 }
 
-func GetMessage(Typ int, sigService *crypto.SigService) core.ConsensusMessage {
-	var msg core.ConsensusMessage
+func GetMessage(Typ int, sigService *crypto.SigService) core.Message {
+	var msg core.Message
 	switch Typ {
 	case core.GRBCProposeType:
 		msg, _ = core.NewGRBCProposeMsg(-1, -1, GetBlock(10), sigService)
@@ -60,7 +60,7 @@ func GetMessage(Typ int, sigService *crypto.SigService) core.ConsensusMessage {
 	return msg
 }
 
-func DisplayMessage(msg core.ConsensusMessage, t *testing.T) {
+func DisplayMessage(msg core.Message, t *testing.T) {
 	switch msg.MsgType() {
 
 	case core.GRBCProposeType:

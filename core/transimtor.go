@@ -8,7 +8,7 @@ import (
 type Transmitor struct {
 	sender     *network.Sender
 	receiver   *network.Receiver
-	recvCh     chan ConsensusMessage
+	recvCh     chan Message
 	msgCh      chan *network.NetMessage
 	parameters Parameters
 	committee  Committee
@@ -24,7 +24,7 @@ func NewTransmitor(
 	tr := &Transmitor{
 		sender:     sender,
 		receiver:   receiver,
-		recvCh:     make(chan ConsensusMessage, 1_000),
+		recvCh:     make(chan Message, 1_000),
 		msgCh:      make(chan *network.NetMessage, 1_000),
 		parameters: parameters,
 		committee:  committee,
@@ -38,14 +38,14 @@ func NewTransmitor(
 
 	go func() {
 		for msg := range tr.receiver.RecvChannel() {
-			tr.recvCh <- msg.(ConsensusMessage)
+			tr.recvCh <- msg.(Message)
 		}
 	}()
 
 	return tr
 }
 
-func (tr *Transmitor) Send(from, to NodeID, msg ConsensusMessage) error {
+func (tr *Transmitor) Send(from, to NodeID, msg Message) error {
 	var addr []string
 
 	if to == NONE {
@@ -55,7 +55,7 @@ func (tr *Transmitor) Send(from, to NodeID, msg ConsensusMessage) error {
 	}
 
 	// filter
-	if tr.parameters.DDos && (msg.MsgType() == GRBCProposeType || msg.MsgType() == PBCProposeType) {
+	if tr.parameters.DDos && (msg.MsgType() == ProposeType) {
 		time.AfterFunc(time.Millisecond*time.Duration(tr.parameters.NetwrokDelay), func() {
 			tr.msgCh <- &network.NetMessage{
 				Msg:     msg,
@@ -72,10 +72,10 @@ func (tr *Transmitor) Send(from, to NodeID, msg ConsensusMessage) error {
 	return nil
 }
 
-func (tr *Transmitor) Recv() ConsensusMessage {
+func (tr *Transmitor) Recv() Message {
 	return <-tr.recvCh
 }
 
-func (tr *Transmitor) RecvChannel() chan ConsensusMessage {
+func (tr *Transmitor) RecvChannel() chan Message {
 	return tr.recvCh
 }

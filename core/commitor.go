@@ -11,10 +11,15 @@ type LocalDAG struct {
 	muBlock      *sync.RWMutex
 	blockDigests map[crypto.Digest]NodeID // store hash of block that has received
 	muDAG        *sync.RWMutex
-	localDAG     map[int]map[NodeID]crypto.Digest // local DAG
+	localDAG     map[int]map[NodeID][]crypto.Digest // local DAG
 	edgesDAG     map[int]map[NodeID]map[crypto.Digest]NodeID
 	muGrade      *sync.RWMutex
 	gradeDAG     map[int]map[NodeID]int
+}
+
+type DAG struct {
+	blocks map[crypto.Digest]*Block
+	
 }
 
 func NewLocalDAG() *LocalDAG {
@@ -23,7 +28,7 @@ func NewLocalDAG() *LocalDAG {
 		muDAG:        &sync.RWMutex{},
 		muGrade:      &sync.RWMutex{},
 		blockDigests: make(map[crypto.Digest]NodeID),
-		localDAG:     make(map[int]map[NodeID]crypto.Digest),
+		localDAG:     make(map[int]map[NodeID][]crypto.Digest),
 		gradeDAG:     make(map[int]map[NodeID]int),
 		edgesDAG:     make(map[int]map[NodeID]map[crypto.Digest]NodeID),
 	}
@@ -55,12 +60,12 @@ func (local *LocalDAG) ReceiveBlock(round int, node NodeID, digest crypto.Digest
 	vslot, ok := local.localDAG[round]
 	eslot := local.edgesDAG[round]
 	if !ok {
-		vslot = make(map[NodeID]crypto.Digest)
+		vslot = make(map[NodeID][]crypto.Digest)
 		eslot = make(map[NodeID]map[crypto.Digest]NodeID)
 		local.localDAG[round] = vslot
 		local.edgesDAG[round] = eslot
 	}
-	vslot[node] = digest
+	vslot[node] = append(vslot[node], digest)
 	eslot[node] = references
 
 	local.muDAG.Unlock()

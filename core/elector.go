@@ -5,35 +5,35 @@ import (
 	"sync"
 )
 
-type ElectAggregator struct {
-	elects []*Elect
-	used   map[NodeID]struct{}
-}
+// type ElectAggregator struct {
+// 	elects []*Elect
+// 	used   map[NodeID]struct{}
+// }
 
-func (a *ElectAggregator) Append(elect *Elect, committee Committee, sigService *crypto.SigService) (NodeID, error) {
-	if _, ok := a.used[elect.Author]; ok {
-		return NONE, ErrUsedElect(ElectType, elect.StrongRefRound, elect.Author)
-	} else {
-		a.used[elect.Author] = struct{}{}
-		a.elects = append(a.elects, elect)
-		if len(a.elects) == committee.HightThreshold() {
-			var shares []crypto.SignatureShare
-			for _, e := range a.elects {
-				shares = append(shares, e.SigShare)
-			}
-			qc, err := crypto.CombineIntactTSPartial(shares, sigService.ShareKey, elect.Hash())
-			if err != nil {
-				return NONE, err
-			}
-			var randint NodeID = 0
-			for i := 0; i < 4; i++ {
-				randint = randint<<8 + NodeID(qc[i])
-			}
-			return randint % NodeID(committee.Size()), nil
-		}
-	}
-	return NONE, nil
-}
+// func (a *ElectAggregator) Append(elect *Elect, committee Committee, sigService *crypto.SigService) (NodeID, error) {
+// 	if _, ok := a.used[elect.Author]; ok {
+// 		return NONE, ErrUsedElect(ElectType, elect.StrongRefRound, elect.Author)
+// 	} else {
+// 		a.used[elect.Author] = struct{}{}
+// 		a.elects = append(a.elects, elect)
+// 		if len(a.elects) == committee.HightThreshold() {
+// 			var shares []crypto.SignatureShare
+// 			for _, e := range a.elects {
+// 				shares = append(shares, e.SigShare)
+// 			}
+// 			qc, err := crypto.CombineIntactTSPartial(shares, sigService.ShareKey, elect.Hash())
+// 			if err != nil {
+// 				return NONE, err
+// 			}
+// 			var randint NodeID = 0
+// 			for i := 0; i < 4; i++ {
+// 				randint = randint<<8 + NodeID(qc[i])
+// 			}
+// 			return randint % NodeID(committee.Size()), nil
+// 		}
+// 	}
+// 	return NONE, nil
+// }
 
 type Elector struct {
 	mu         *sync.RWMutex
@@ -55,7 +55,7 @@ func NewElector(sigService *crypto.SigService, committee Committee) *Elector {
 
 func (e *Elector) Add(elect *Elect) (NodeID, error) {
 
-	waveNum := elect.StrongRefRound / WaveRound
+	waveNum := elect.RefRound / WaveRound
 	a, ok := e.aggregator[waveNum]
 	if !ok {
 		a = &ElectAggregator{
