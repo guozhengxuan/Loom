@@ -8,15 +8,21 @@ import (
 )
 
 type dag struct {
-	mu            *sync.RWMutex
+	mu *sync.RWMutex
+
+	nodeID    NodeID
+	committee *Committee
+
 	cache         [][]*Block // store blocks of the entire DAG
 	lastRefHeight []int      // track the height of each node's last ref block
 	watermark     []int      // height of highest committed block of each node
 }
 
-func NewDag(committee Committee) *dag {
+func NewDag(nodeID NodeID, committee *Committee) *dag {
 	return &dag{
 		mu:            new(sync.RWMutex),
+		nodeID:        nodeID,
+		committee:     committee,
 		cache:         make([][]*Block, committee.Size()),
 		lastRefHeight: make([]int, committee.Size()),
 		watermark:     make([]int, committee.Size()),
@@ -36,42 +42,58 @@ func (d *dag) add(block *Block) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	b := block.Header
+
 	// Add to cache.
-	line := d.cache[block.Author]
-	newLen := block.Height - d.watermark[block.Author]
+	line := d.cache[b.Author]
+	newLen := b.Height - d.watermark[b.Author]
 	line = append(line, make([]*Block, newLen-len(line))...)
-	line[newLen - 1] = block
+	line[newLen-1] = block
 
 	// Update the height of author's last ref block.
 	if block.Ref.Type != Plain {
-		d.lastRefHeight[block.Author] = block.Height
+		d.lastRefHeight[b.Author] = b.Height
 	}
 }
 
 // Collect references for new block.
-func (d *dag) selectRef(round int, author NodeID, committee Committee) (refItem []crypto.Digest) {
+func (d *dag) selectRef(round int) Ref {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
+	refType := StrongRef
+
+	if refType%2 == 0 {
+		refType = WeakRef
+	}
+
+	ref := Ref{
+		Round: round,
+		Type: refType,
+		Item: make([]BlockHeader, 0, d.committee.HightThreshold()),
+	}
+
 	// Check if there are n-f new blocks.
 	for id, line := range d.cache {
-		highest := line[len(line)-1]
+		lastHeight := line[len(line)-1].Header.Height
 
 		lastRefHeight := d.lastRefHeight[id]
 
-		if round%2 == 0 && highest.Height-lastRefHeight >= 2 ||
-			round%2 == 1 && highest.Height-lastRefHeight >= 1 {
-			refItem = append(refItem, highest.Digest)
+		if round%2 == 1 && lastHeight-lastRefHeight >= 2 ||
+			round%2 == 0 && lastHeight-lastRefHeight >= 1 {
+			ref.Item = append(ref.Item, BlockHeader{NodeID(id), lastHeight})
 		}
 	}
 
-	// Otherwise the ref type is Plain, refer only to the parent block.
-	if len(refItem) < committee.HightThreshold() {
-		highest := d.cache[author][len(d.cache[author]) - 1]
-		refItem = []crypto.Digest{highest.Digest}
+	// Otherwise the ref is Plain and only point to the parent block.
+	if len(ref.Item) < d.committee.HightThreshold() {
+		size := len(d.cache[d.nodeID])
+		lastHeight := d.cache[d.nodeID][size - 1].Header.Height
+
+		ref.Item = []BlockHeader{{NodeID(d.nodeID), lastHeight}}
 	}
 
-	return
+	return ref
 }
 
 func (d *dag) commit(round int, leader NodeID) {
@@ -257,7 +279,7 @@ func (c *Commitor) run() {
 			} else {
 				if block.Batch.Txs != nil {
 					//BenchMark Log
-					logger.Info.Printf("commit Block round %d node %d batch_id %d \n", block.Height, block.Author, block.Batch.ID)
+					logger.Info.Printf("commit Block round %d node %d batch_id %d \n", block.Header.Height, block.Header.Author, block.Batch.ID)
 				}
 				c.commitChannel <- block
 			}

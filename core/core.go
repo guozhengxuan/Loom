@@ -20,6 +20,7 @@ type Core struct {
 	eletor          *Elector
 	commitor        *Commitor
 	localDAG        *LocalDAG
+	dag             *dag
 	loopBackChannel chan *Block
 	commitChannel   chan<- *Block
 	proposedNotify  map[int]*sync.Mutex
@@ -50,6 +51,7 @@ func NewCore(
 		commitChannel:   commitChannel,
 		proposedNotify:  make(map[int]*sync.Mutex),
 		localDAG:        NewLocalDAG(),
+		dag:             NewDag(nodeID, &committee),
 		voteAg:          make(map[int]*aggregator),
 	}
 
@@ -82,30 +84,23 @@ func getBlock(store *store.Store, digest crypto.Digest) (*Block, error) {
 	return block, nil
 }
 
-func (corer *Core) checkReference(block *Block) (bool, []crypto.Digest) {
-	var temp []crypto.Digest
-	for d := range block.Ref.Item {
-		temp = append(temp, d)
-	}
-	ok, missDeigest := corer.localDAG.IsReceived(temp...)
-	return ok, missDeigest
-}
-
 func (corer *Core) generatorBlock(height, refRound int) (*Block, error) {
 	logger.Debug.Printf("procesing generatorBlock height %d round %d \n", height, refRound)
 
-	ref := corer.localDAG.TakeRef(refRound)
+	ref := corer.dag.selectRef(refRound)
 
 	block, err := NewBlock(corer.nodeID, height, corer.txpool.GetBatch(), ref, corer.sigService)
 	return block, err
 }
 
 func (corer *Core) handlePropose(block *Block) error {
-	logger.Debug.Printf("procesing propose height %d node %d \n", block.Height, block.Author)
+	b := block.Header
+
+	logger.Debug.Printf("procesing propose height %d node %d \n", b.Height, b.Author)
 
 	// Verify signature.
 	if !block.Verify(corer.committee) {
-		return ErrSignature(block.MsgType(), block.Height, block.Author)
+		return ErrSignature(block.MsgType(), b.Height, b.Author)
 	}
 
 	// Store Block.
@@ -113,39 +108,33 @@ func (corer *Core) handlePropose(block *Block) error {
 		return err
 	}
 
-	// Check reference.
-	if ok, miss := corer.checkReference(block); !ok {
-		//retrieve miss block
-		corer.retriever.requestBlocks(miss, block.Author, block.Digest)
-		return ErrReference(block.MsgType(), block.Height, block.Author)
-	}
-
 	// Send echo.
 	echo, err := NewEcho(corer.nodeID, block, corer.sigService)
 	if err != nil {
 		logger.Warn.Println(err)
 	}
-	corer.transmitor.Send(corer.nodeID, block.Author, echo)
+	corer.transmitor.Send(corer.nodeID, b.Author, echo)
 
 	// Add to local DAG.
-	corer.localDAG.ReceiveBlock(block.Ref.Round, block.Author, block.Digest, block.Ref.Item)
+	corer.dag.add(block)
 
 	return nil
 }
 
 func (corer *Core) handleEcho(echo *Echo) error {
-	logger.Debug.Printf("procesing echo height %d node %d \n", echo.BlockHeight, echo.Author)
+	b := echo.Header
+	logger.Debug.Printf("procesing echo height %d node %d \n", b.Height, echo.Author)
 
 	// Verify signature
 	if !echo.Verify(corer.committee) {
-		return ErrSignature(echo.MsgType(), echo.BlockHeight, echo.Author)
+		return ErrSignature(echo.MsgType(), b.Height, echo.Author)
 	}
 
 	// Aggregate.
-	ag, ok := corer.voteAg[echo.BlockHeight]
+	ag, ok := corer.voteAg[b.Height]
 	if !ok {
 		ag = NewAggregator(&corer.committee)
-		corer.voteAg[echo.BlockHeight] = ag
+		corer.voteAg[b.Height] = ag
 	}
 	ag.push(echo.Author, echo)
 	if votes := ag.take(); len(votes) != 0 {
@@ -157,7 +146,7 @@ func (corer *Core) handleEcho(echo *Echo) error {
 
 func (corer *Core) invokeElect(refRound int) error {
 	// Elect a leader if we are in a strong ref round.
-	if refRound%2 == 0 {
+	if refRound%2 == 1 {
 		elect, err := NewElectMsg(
 			corer.nodeID,
 			refRound,

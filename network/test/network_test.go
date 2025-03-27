@@ -26,7 +26,7 @@ func TestNetwork(t *testing.T) {
 			msg := &network.NetMessage{
 				Msg: &core.Echo{
 					Author:   1,
-					BlockAuthor: 1,
+					Header: core.BlockHeader{Author: 1},
 				},
 				Address: []string{addr},
 			}
