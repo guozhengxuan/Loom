@@ -40,13 +40,9 @@ func GetDigest() crypto.Digest {
 func GetMessage(Typ int, sigService *crypto.SigService) core.Message {
 	var msg core.Message
 	switch Typ {
-	case core.GRBCProposeType:
-		msg, _ = core.NewGRBCProposeMsg(-1, -1, GetBlock(10), sigService)
 	case core.EchoType:
 		msg, _ = core.NewEcho(-1, -1, GetDigest(), -1, sigService)
-	case core.ReadyType:
-		msg, _ = core.NewReadyMsg(-1, -1, GetDigest(), -1, sigService)
-	case core.PBCProposeType:
+	case core.ProposeType:
 		msg, _ = core.NewPBCProposeMsg(-1, -1, GetBlock(10), sigService)
 	case core.ReplyBlockType:
 		msg, _ = core.NewReplyBlockMsg(-1, []*core.Block{GetBlock(10)}, -1, sigService)

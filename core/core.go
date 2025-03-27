@@ -180,7 +180,7 @@ func (corer *Core) handleElect(elect *Elect) error {
 	}
 
 	ok, leader := corer.eletor.getLeader(elect.RefRound)
-	if ok{
+	if ok {
 		grade := corer.localDAG.GetGrade(elect.RefRound-1, int(leader))
 		logger.Debug.Printf("Elector: round %d leader %d grade %d \n", elect.RefRound, leader, grade)
 		if grade == 1 {

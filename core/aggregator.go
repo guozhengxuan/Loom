@@ -64,7 +64,7 @@ func (e *Elector) add(elect *Elect) error {
 		e.ag[round] = a
 	}
 
-	msg := e.ag[round].take()
+	msg := a.take()
 	if len(msg) == 0 {
 		return nil
 	}
@@ -75,15 +75,17 @@ func (e *Elector) add(elect *Elect) error {
 		return err
 	}
 
+	e.leader[round] = e.reveal(sig)
+
+	return nil
+}
+
+func (e *Elector) reveal(sig []byte) NodeID {
 	var seed NodeID = 0
 	for i := 0; i < 4; i++ {
 		seed = seed<<8 + NodeID(sig[i])
 	}
-	id := seed % NodeID(e.committee.Size())
-
-	e.leader[round] = id
-
-	return nil
+	return seed % NodeID(e.committee.Size())
 }
 
 func (e *Elector) getLeader(refRound int) (bool, NodeID) {

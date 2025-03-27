@@ -5,79 +5,77 @@ import (
 	"WuKong/logger"
 	"WuKong/store"
 	"sync"
-
-	cmap "github.com/orcaman/concurrent-map/v2"
 )
 
 type dag struct {
-	mu      *sync.RWMutex
-	cache   cmap.ConcurrentMap[string, *Block]
-	current map[NodeID]crypto.Digest
-	track   map[int]map[NodeID]int
+	mu            *sync.RWMutex
+	cache         [][]*Block // store blocks of the entire DAG
+	lastRefHeight []int      // track the height of each node's last ref block
+	watermark     []int      // height of highest committed block of each node
 }
 
-func NewDag() *dag {
+func NewDag(committee Committee) *dag {
 	return &dag{
-		mu:      new(sync.RWMutex),
-		cache:   cmap.New[*Block](),
-		current: make(map[NodeID]crypto.Digest),
-		track:   make(map[int]map[NodeID]int),
+		mu:            new(sync.RWMutex),
+		cache:         make([][]*Block, committee.Size()),
+		lastRefHeight: make([]int, committee.Size()),
+		watermark:     make([]int, committee.Size()),
 	}
 }
 
-// Check for missing digests.
-func (d *dag) checkMissing(digests ...crypto.Digest) (bool, []crypto.Digest) {
-	var miss []crypto.Digest
-	flag := true
-
-	for _, hash := range digests {
-		if d.cache.Has(string(hash[:])) {
-			miss = append(miss, hash)
-			flag = false
-		}
+func (d *dag) get(author NodeID, height int) *Block {
+	i := height - d.watermark[author] - 1
+	if i >= 0 && i < len(d.cache[author]) {
+		return d.cache[author][i]
 	}
-
-	return flag, miss
+	return nil
 }
 
-// Put the newly received block into local DAG.
+// Add the newly received block into local DAG.
 func (d *dag) add(block *Block) {
-	hash := block.Digest
-	d.cache.Set(string(hash[:]), block)
-
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Update highest block.
-	if prev, ok := d.current[block.Author]; !ok || func() bool {
-		cur, _ := d.cache.Get(string(prev[:]))
-		return cur.Height < block.Height
-	}() {
-		d.current[block.Author] = hash
-	}
+	// Add to cache.
+	line := d.cache[block.Author]
+	newLen := block.Height - d.watermark[block.Author]
+	line = append(line, make([]*Block, newLen-len(line))...)
+	line[newLen - 1] = block
 
-	// Update track if ref type of the block is not plain.
+	// Update the height of author's last ref block.
 	if block.Ref.Type != Plain {
-		d.track[block.Ref.Round][block.Author] = block.Height
+		d.lastRefHeight[block.Author] = block.Height
 	}
 }
 
-func (d *dag) selectRef(round int) (ref []crypto.Digest) {
+// Collect references for new block.
+func (d *dag) selectRef(round int, author NodeID, committee Committee) (refItem []crypto.Digest) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	for node, curHash := range d.current {
-		curBlock, _ := d.cache.Get(string(curHash[:]))
-		curHeight := curBlock.Height
+	// Check if there are n-f new blocks.
+	for id, line := range d.cache {
+		highest := line[len(line)-1]
 
-		lastRefHeight := d.track[round][node]
+		lastRefHeight := d.lastRefHeight[id]
 
-		if round%2 == 0 && curHeight-lastRefHeight >= 2 ||
-			round%2 == 1 && curHeight-lastRefHeight >= 1 {
-			ref = append(ref, curHash)
+		if round%2 == 0 && highest.Height-lastRefHeight >= 2 ||
+			round%2 == 1 && highest.Height-lastRefHeight >= 1 {
+			refItem = append(refItem, highest.Digest)
 		}
 	}
+
+	// Otherwise the ref type is Plain, refer only to the parent block.
+	if len(refItem) < committee.HightThreshold() {
+		highest := d.cache[author][len(d.cache[author]) - 1]
+		refItem = []crypto.Digest{highest.Digest}
+	}
+
 	return
+}
+
+func (d *dag) commit(round int, leader NodeID) {
+
 }
 
 type LocalDAG struct {
