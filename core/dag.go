@@ -7,6 +7,11 @@ import (
 	"sync"
 )
 
+type commitReq struct {
+	round  int
+	leader NodeID
+}
+
 type dag struct {
 	mu *sync.RWMutex
 
@@ -16,9 +21,19 @@ type dag struct {
 	cache         [][]*Block // store blocks of the entire DAG
 	lastRefHeight []int      // track the height of each node's last ref block
 	watermark     []int      // height of highest committed block of each node
+
+	blockChan   <-chan *Block
+	refReqChan  <-chan int
+	refRespChan chan<- Ref
+	commitChan  <-chan commitReq
 }
 
-func NewDag(nodeID NodeID, committee *Committee) *dag {
+func NewDag(nodeID NodeID,
+	committee *Committee,
+	blockRecvChan <-chan *Block,
+	RefReqChan <-chan int,
+	RefRespChan chan<- Ref,
+	commitChan <-chan commitReq) *dag {
 	return &dag{
 		mu:            new(sync.RWMutex),
 		nodeID:        nodeID,
@@ -26,6 +41,10 @@ func NewDag(nodeID NodeID, committee *Committee) *dag {
 		cache:         make([][]*Block, committee.Size()),
 		lastRefHeight: make([]int, committee.Size()),
 		watermark:     make([]int, committee.Size()),
+		blockChan:     blockRecvChan,
+		refReqChan:    RefReqChan,
+		refRespChan:   RefRespChan,
+		commitChan:    commitChan,
 	}
 }
 
@@ -34,6 +53,7 @@ func (d *dag) get(author NodeID, height int) *Block {
 	if i >= 0 && i < len(d.cache[author]) {
 		return d.cache[author][i]
 	}
+
 	return nil
 }
 
@@ -44,11 +64,13 @@ func (d *dag) add(block *Block) {
 
 	b := block.Header
 
-	// Add to cache.
-	line := d.cache[b.Author]
+	// Add to cache, offset by watermark.
+	oldLen := len(d.cache[b.Author])
 	newLen := b.Height - d.watermark[b.Author]
-	line = append(line, make([]*Block, newLen-len(line))...)
-	line[newLen-1] = block
+
+	d.cache[b.Author] = append(d.cache[b.Author], make([]*Block, newLen-oldLen)...)
+
+	d.cache[b.Author][newLen-1] = block
 
 	// Update the height of author's last ref block.
 	if block.Ref.Type != Plain {
@@ -61,17 +83,7 @@ func (d *dag) selectRef(round int) Ref {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	refType := StrongRef
-
-	if refType%2 == 0 {
-		refType = WeakRef
-	}
-
-	ref := Ref{
-		Round: round,
-		Type: refType,
-		Item: make([]BlockHeader, 0, d.committee.HightThreshold()),
-	}
+	refItems := make([]BlockHeader, 0, d.committee.HightThreshold())
 
 	// Check if there are n-f new blocks.
 	for id, line := range d.cache {
@@ -81,23 +93,67 @@ func (d *dag) selectRef(round int) Ref {
 
 		if round%2 == 1 && lastHeight-lastRefHeight >= 2 ||
 			round%2 == 0 && lastHeight-lastRefHeight >= 1 {
-			ref.Item = append(ref.Item, BlockHeader{NodeID(id), lastHeight})
+			refItems = append(refItems, BlockHeader{NodeID(id), lastHeight})
 		}
 	}
 
-	// Otherwise the ref is Plain and only point to the parent block.
-	if len(ref.Item) < d.committee.HightThreshold() {
-		size := len(d.cache[d.nodeID])
-		lastHeight := d.cache[d.nodeID][size - 1].Header.Height
+	refType := StrongRef
 
-		ref.Item = []BlockHeader{{NodeID(d.nodeID), lastHeight}}
+	if round%2 == 0 {
+		refType = WeakRef
 	}
 
-	return ref
+	// Otherwise the ref is Plain and only points to the parent block.
+	if len(refItems) < d.committee.HightThreshold() {
+		refType = Plain
+
+		size := len(d.cache[d.nodeID])
+		lastHeight := d.cache[d.nodeID][size-1].Header.Height
+
+		refItems = []BlockHeader{{NodeID(d.nodeID), lastHeight}}
+	}
+
+	return Ref{round, refType, refItems}
 }
 
-func (d *dag) commit(round int, leader NodeID) {
+func (d *dag) commit(commitReq commitReq) {
+	round := commitReq.round
+	leader := commitReq.leader
 
+	all := d.cache[leader]
+	if len(all) == 0 {
+		return
+	}
+
+	// The index is in range, becuase both commit invocation and watermark updating
+	// happen exactly once in each strong ref round.
+	index := d.lastRefHeight[leader] - d.watermark[leader] - 1
+	last := all[index]
+	if last.Ref.Round < round-1 {
+		return
+	}
+
+	// According to wahoo++, it's safe to submit all previous blocks starting from
+	// the one in the second position before the leader's highest block.
+	d.submit(leader, all[len(all)-1].Header.Height-2)
+}
+
+// Submit block in a tree-traversing way.
+func (d *dag) submit(node NodeID, height int) {
+
+}
+
+func (d *dag) run() {
+	for {
+		select {
+		case block := <-d.blockChan:
+			d.add(block)
+		case round := <-d.refReqChan:
+			d.refRespChan <- d.selectRef(round)
+		case commitReq := <-d.commitChan:
+			d.commit(commitReq)
+		}
+	}
 }
 
 type LocalDAG struct {

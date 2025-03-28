@@ -266,12 +266,14 @@ func (msg *LoopBackMsg) MsgType() int {
 }
 
 const (
+	// Network Messages
 	ProposeType int = iota
 	EchoType
 	ElectType
 	RequestBlockType
 	ReplyBlockType
 	LoopBackType
+
 	TotalNums
 )
 
@@ -281,7 +283,7 @@ const (
 	StrongRef
 )
 
-var DefaultMsgTypes = map[int]reflect.Type{
+var DefaultNetMsgTypes = map[int]reflect.Type{
 	EchoType:         reflect.TypeOf(Echo{}),
 	ElectType:        reflect.TypeOf(Elect{}),
 	RequestBlockType: reflect.TypeOf(RequestBlockMsg{}),

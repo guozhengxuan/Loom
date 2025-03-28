@@ -10,7 +10,7 @@ import (
 
 func TestNetwork(t *testing.T) {
 	// logger.SetOutput(logger.InfoLevel|logger.DebugLevel|logger.ErrorLevel|logger.WarnLevel, logger.NewFileWriter("./default.log"))
-	cc := network.NewCodec(core.DefaultMsgTypes)
+	cc := network.NewCodec(core.DefaultNetMsgTypes)
 	addr := ":8080"
 	receiver := network.NewReceiver(addr, cc)
 	go receiver.Run()
@@ -25,7 +25,7 @@ func TestNetwork(t *testing.T) {
 			defer wg.Done()
 			msg := &network.NetMessage{
 				Msg: &core.Echo{
-					Author:   1,
+					Author: 1,
 					Header: core.BlockHeader{Author: 1},
 				},
 				Address: []string{addr},

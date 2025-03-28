@@ -17,7 +17,7 @@ func TestTransimtor(t *testing.T) {
 	wg := sync.WaitGroup{}
 	ctx, cancel := context.WithCancel(context.Background())
 	var node1, node2 core.NodeID = 0, 1
-	cc := network.NewCodec(core.DefaultMsgTypes)
+	cc := network.NewCodec(core.DefaultNetMsgTypes)
 	//node 1
 	wg.Add(1)
 	go func() {

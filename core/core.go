@@ -145,7 +145,7 @@ func (corer *Core) handleEcho(echo *Echo) error {
 }
 
 func (corer *Core) invokeElect(refRound int) error {
-	// Elect a leader if we are in a strong ref round.
+	// Invoke election if we are in a strong ref round.
 	if refRound%2 == 1 {
 		elect, err := NewElectMsg(
 			corer.nodeID,
