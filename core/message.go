@@ -14,33 +14,31 @@ type Message interface {
 	Hash() crypto.Digest
 }
 
-type BlockHeader struct {
-	Author NodeID
-	Height int
-}
-
-type Ref struct {
-	Round int
-	Type  int
-	Item  []BlockHeader // attach author and height of previous blocks
+type Header struct {
+	Author    NodeID
+	H         int // Block height
+	R         int // Block round
+	FirstRefH int // Height of the first block of current round
 }
 
 type Block struct {
-	Header BlockHeader
+	Header Header
 	Batch  pool.Batch
-	Ref    Ref
+	Ref    []Header
 	Sig    crypto.Signature
 }
 
 func NewBlock(
 	author NodeID,
 	height int,
+	round int,
+	firstH int,
 	batch pool.Batch,
-	ref Ref,
+	ref []Header,
 	sigService *crypto.SigService,
 ) (*Block, error) {
 	block := &Block{
-		Header: BlockHeader{author, height},
+		Header: Header{author, height, round, firstH},
 		Batch:  batch,
 		Ref:    ref,
 	}
@@ -77,7 +75,7 @@ func (b *Block) Hash() crypto.Digest {
 
 	hasher := crypto.NewHasher()
 	hasher.Add(strconv.AppendInt(nil, int64(b.Header.Author), 2))
-	hasher.Add(strconv.AppendInt(nil, int64(b.Header.Height), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(b.Header.H), 2))
 	for _, tx := range b.Batch.Txs {
 		hasher.Add(tx)
 	}
@@ -96,7 +94,7 @@ func (b *Block) MsgType() int {
 // Echo
 type Echo struct {
 	Author NodeID
-	Header BlockHeader
+	Header Header
 	Sig    crypto.Signature
 }
 
@@ -125,7 +123,7 @@ func (msg *Echo) Hash() crypto.Digest {
 	hasher := crypto.NewHasher()
 	hasher.Add(strconv.AppendInt(nil, int64(msg.Author), 2))
 	hasher.Add(strconv.AppendInt(nil, int64(msg.Header.Author), 2))
-	hasher.Add(strconv.AppendInt(nil, int64(msg.Header.Height), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(msg.Header.H), 2))
 	return hasher.Sum256(nil)
 }
 

@@ -96,11 +96,11 @@ func (corer *Core) generatorBlock(height, refRound int) (*Block, error) {
 func (corer *Core) handlePropose(block *Block) error {
 	b := block.Header
 
-	logger.Debug.Printf("procesing propose height %d node %d \n", b.Height, b.Author)
+	logger.Debug.Printf("procesing propose height %d node %d \n", b.H, b.Author)
 
 	// Verify signature.
 	if !block.Verify(corer.committee) {
-		return ErrSignature(block.MsgType(), b.Height, b.Author)
+		return ErrSignature(block.MsgType(), b.H, b.Author)
 	}
 
 	// Store Block.
@@ -123,18 +123,18 @@ func (corer *Core) handlePropose(block *Block) error {
 
 func (corer *Core) handleEcho(echo *Echo) error {
 	b := echo.Header
-	logger.Debug.Printf("procesing echo height %d node %d \n", b.Height, echo.Author)
+	logger.Debug.Printf("procesing echo height %d node %d \n", b.H, echo.Author)
 
 	// Verify signature
 	if !echo.Verify(corer.committee) {
-		return ErrSignature(echo.MsgType(), b.Height, echo.Author)
+		return ErrSignature(echo.MsgType(), b.H, echo.Author)
 	}
 
 	// Aggregate.
-	ag, ok := corer.voteAg[b.Height]
+	ag, ok := corer.voteAg[b.H]
 	if !ok {
 		ag = NewAggregator(&corer.committee)
-		corer.voteAg[b.Height] = ag
+		corer.voteAg[b.H] = ag
 	}
 	ag.push(echo.Author, echo)
 	if votes := ag.take(); len(votes) != 0 {
