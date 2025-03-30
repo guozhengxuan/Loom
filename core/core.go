@@ -18,8 +18,6 @@ type Core struct {
 	store           *store.Store
 	retriever       *Retriever
 	eletor          *Elector
-	commitor        *Commitor
-	localDAG        *LocalDAG
 	dag             *dag
 	loopBackChannel chan *Block
 	commitChannel   chan<- *Block
@@ -50,14 +48,12 @@ func NewCore(
 		loopBackChannel: loopBackChannel,
 		commitChannel:   commitChannel,
 		proposedNotify:  make(map[int]*sync.Mutex),
-		localDAG:        NewLocalDAG(),
 		dag:             NewDag(nodeID, &committee),
 		voteAg:          make(map[int]*aggregator),
 	}
 
 	corer.retriever = NewRetriever(nodeID, store, transmitor, sigService, parameters, loopBackChannel)
 	corer.eletor = NewElector(sigService, committee)
-	corer.commitor = NewCommitor(corer.eletor, corer.localDAG, store, commitChannel, committee.Size())
 
 	return corer
 }

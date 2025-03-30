@@ -1,9 +1,9 @@
 package core
 
 import (
-	"WuKong/crypto"
-	"WuKong/logger"
-	"WuKong/store"
+	// "WuKong/crypto"
+	// "WuKong/logger"
+	// "WuKong/store"
 	"sync"
 )
 
@@ -14,16 +14,28 @@ type dag struct {
 	committee *Committee
 
 	cache     [][]*Block // store blocks of the entire DAG
-	watermark []int      // height of highest committed block of each node
+	watermark []int      // height of highest committed block
+	anchor    []NodeID   // leader of each round
+
+	blockCh   <-chan *Block
+	refReqCh  <-chan int
+	refRespCh chan<- []Header
+
+	commitReqCh <-chan commitReq            // commit request channel without buffer
+	pending     map[commitReq]chan<- *Block // register one-shot reply channel for commit requests.
 }
 
 func NewDag(nodeID NodeID, committee *Committee) *dag {
 	dag := &dag{
-		mu:        new(sync.RWMutex),
-		nodeID:    nodeID,
-		committee: committee,
-		cache:     make([][]*Block, committee.Size()),
-		watermark: make([]int, committee.Size()),
+		mu:          new(sync.RWMutex),
+		nodeID:      nodeID,
+		committee:   committee,
+		cache:       make([][]*Block, committee.Size()),
+		watermark:   make([]int, committee.Size()),
+		blockCh:     make(<-chan *Block),
+		refReqCh:    make(<-chan int),
+		refRespCh:   make(chan<- []Header),
+		commitReqCh: make(<-chan commitReq),
 	}
 
 	for i := 0; i < committee.Size(); i++ {
@@ -42,7 +54,7 @@ func (d *dag) get(author NodeID, height int) *Block {
 	return nil
 }
 
-func (d *dag) checkMissing(items []Header) []Header {
+func (d *dag) fetchMissing(items []Header) []Header {
 	var miss []Header
 
 	for _, b := range items {
@@ -61,14 +73,30 @@ func (d *dag) add(block *Block) {
 	defer d.mu.Unlock()
 
 	b := block.Header
+	index := b.H - d.watermark[b.Author] - 1
 
-	// Add to cache, offset by watermark.
+	if index < 0 {
+		return
+	}
+
 	oldLen := len(d.cache[b.Author])
-	newLen := b.H - d.watermark[b.Author]
 
-	d.cache[b.Author] = append(d.cache[b.Author], make([]*Block, newLen-oldLen)...)
+	if index < oldLen {
+		// Receiving a lagged block.
+		d.cache[b.Author][index] = block
 
-	d.cache[b.Author][newLen-1] = block
+	} else {
+		// Add the up-to-date block to cache, offset by watermark.
+		newLen := index + 1
+		d.cache[b.Author] = append(d.cache[b.Author], make([]*Block, newLen-oldLen)...)
+		d.cache[b.Author][index] = block
+	}
+
+	// Response to block pull channel from commitor.
+	req := commitReq{b.Author, b.H}
+	if replyCh, ok := d.pending[req]; ok {
+		replyCh <- block
+	}
 }
 
 // Collect references for new block.
@@ -81,6 +109,7 @@ func (d *dag) selectRef(round int) []Header {
 	// Check if there are n-f new qualified blocks.
 	for _, line := range d.cache {
 
+		// Ignore nodes from which no blocks of current round are received.
 		if len(line) == 0 || line[len(line)-1].Header.R < round-1 {
 			continue
 		}
@@ -90,6 +119,8 @@ func (d *dag) selectRef(round int) []Header {
 		lastH := lastBlockHeader.H
 		lastRefH := lastBlockHeader.FirstRefH
 
+		// Strong ref round requires two new blocks received from each node,
+		// while weak ref round requires only one new block.
 		if round%2 == 1 && lastH-lastRefH >= 2 ||
 			round%2 == 0 && lastH-lastRefH >= 1 {
 			ref = append(ref, lastBlockHeader)
@@ -108,309 +139,96 @@ func (d *dag) selectRef(round int) []Header {
 }
 
 func (d *dag) commit(round int, leader NodeID) {
-	line := d.cache[leader]
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	// Quit if there no newly received blocks from current leader.
-	if len(line) == 0 {
-		return
-	}
+	line := d.cache[leader]
 
 	// According to wahoo++, it's safe to submit all previous blocks starting from
 	// the one in the second position before the leader's highest block.
-	for i := len(line)-3; i >= 0; i-- {
-		if line[i] != nil {
-			d.submit(line[i].Header.Author, line[i].Header.H)
-			break
+	if len(line) >= 3 {
+		index := len(line) - 3
+		d.submit(line[index].Header.Author, round, line[index].Header.H)
+	}
+}
+
+// Recursively submit block in a tree-traversing way.
+func (d *dag) submit(node NodeID, round, height int) {
+	d.submitAnchor(round)
+	// for h := d.cache
+}
+
+func (d *dag) submitAnchor(round int) {
+
+}
+
+func (d *dag) handleBlockPullReq(req blockPullReq) {
+	author := req.commitReq.author
+	height := req.commitReq.height
+
+	replyCh := req.blockPullCh
+
+	// Empty reply for committed blocks.
+	if height <= d.watermark[author] {
+		replyCh <- nil
+		return
+	}
+
+	index := height - d.watermark[author] - 1
+
+	// Reply block if received, otherwise wait for outer core to receive.
+	if index < len(d.cache[author]) && d.cache[author][index] != nil {
+		replyCh <- d.cache[author][index]
+	} else {
+		d.pending[req.commitReq] = replyCh
+	}
+}
+
+func (d *dag) run() {
+
+	blockPullCh := make(chan blockPullReq)
+	commitor := Commitor{d.commitReqCh, blockPullCh}
+
+	// Init commitor
+	go commitor.run()
+
+	// Handle requests from core and commitor.
+	for {
+		select {
+		case block := <-d.blockCh:
+			d.add(block)
+		case round := <-d.refReqCh:
+			d.refRespCh <- d.selectRef(round)
+		case req := <-blockPullCh:
+			d.handleBlockPullReq(req)
 		}
 	}
 }
 
-// Submit block with leader queue.
-func (d *dag) submit(node NodeID, height int) {
-
+type commitReq struct {
+	author NodeID
+	height int
 }
 
-type LocalDAG struct {
-	muBlock      *sync.RWMutex
-	blockDigests map[crypto.Digest]NodeID // store hash of block that has received
-	muDAG        *sync.RWMutex
-	localDAG     map[int]map[NodeID]crypto.Digest // local DAG
-	edgesDAG     map[int]map[NodeID]map[crypto.Digest]NodeID
-	muGrade      *sync.RWMutex
-	gradeDAG     map[int]map[NodeID]int
-}
-
-func NewLocalDAG() *LocalDAG {
-	return &LocalDAG{
-		muBlock:      &sync.RWMutex{},
-		muDAG:        &sync.RWMutex{},
-		muGrade:      &sync.RWMutex{},
-		blockDigests: make(map[crypto.Digest]NodeID),
-		localDAG:     make(map[int]map[NodeID]crypto.Digest),
-		gradeDAG:     make(map[int]map[NodeID]int),
-		edgesDAG:     make(map[int]map[NodeID]map[crypto.Digest]NodeID),
-	}
-}
-
-// Check for missing digests.
-func (local *LocalDAG) IsReceived(digests ...crypto.Digest) (bool, []crypto.Digest) {
-	local.muBlock.RLock()
-	defer local.muBlock.RUnlock()
-
-	var miss []crypto.Digest
-	var flag bool = true
-	for _, d := range digests {
-		if _, ok := local.blockDigests[d]; !ok {
-			miss = append(miss, d)
-			flag = false
-		}
-	}
-
-	return flag, miss
-}
-
-func (local *LocalDAG) ReceiveBlock(round int, node NodeID, digest crypto.Digest, references map[crypto.Digest]NodeID) {
-	local.muBlock.Lock()
-	local.blockDigests[digest] = node
-	local.muBlock.Unlock()
-
-	local.muDAG.Lock()
-	vslot, ok := local.localDAG[round]
-	eslot := local.edgesDAG[round]
-	if !ok {
-		vslot = make(map[NodeID]crypto.Digest)
-		eslot = make(map[NodeID]map[crypto.Digest]NodeID)
-		local.localDAG[round] = vslot
-		local.edgesDAG[round] = eslot
-	}
-	vslot[node] = digest
-	eslot[node] = references
-
-	local.muDAG.Unlock()
-}
-
-func (local *LocalDAG) TakeRef(round int) Ref {
-	return Ref{}
-}
-
-func (local *LocalDAG) GetRoundReceivedBlockNums(round int) (nums, grade2nums int) {
-	local.muDAG.RLock()
-	defer local.muDAG.RUnlock()
-	local.muGrade.RLock()
-	defer local.muGrade.RUnlock()
-
-	nums = len(local.localDAG[round])
-	if round%2 == 0 {
-		for _, g := range local.gradeDAG[round] {
-			if g == GradeTwo {
-				grade2nums++
-			}
-		}
-	}
-
-	return
-}
-
-func (local *LocalDAG) GetReceivedBlock(round int, node NodeID) (crypto.Digest, bool) {
-	local.muDAG.RLock()
-	defer local.muDAG.RUnlock()
-	if slot, ok := local.localDAG[round]; ok {
-		d, ok := slot[node]
-		return d, ok
-	}
-	return crypto.Digest{}, false
-}
-
-func (local *LocalDAG) GetReceivedBlockReference(round int, node NodeID) (map[crypto.Digest]NodeID, bool) {
-	local.muDAG.RLock()
-	defer local.muDAG.RUnlock()
-	if slot, ok := local.edgesDAG[round]; ok {
-		reference, ok := slot[node]
-		return reference, ok
-	}
-	return nil, false
-}
-
-func (local *LocalDAG) GetRoundReceivedBlock(round int) (digests map[crypto.Digest]NodeID) {
-	local.muDAG.RLock()
-	defer local.muDAG.RUnlock()
-	digests = make(map[crypto.Digest]NodeID)
-	for id, d := range local.localDAG[round] {
-		digests[d] = id
-	}
-
-	return digests
-}
-
-func (local *LocalDAG) GetGrade(round, node int) (grade int) {
-	if round%2 == 0 {
-		local.muGrade.RLock()
-		if slot, ok := local.gradeDAG[round]; !ok {
-			return 0
-		} else {
-			grade = slot[NodeID(node)]
-		}
-		local.muGrade.RUnlock()
-	}
-	return
-}
-
-func (local *LocalDAG) UpdateGrade(round, node, grade int) {
-	if round%2 == 0 {
-		local.muGrade.Lock()
-
-		slot, ok := local.gradeDAG[round]
-		if !ok {
-			slot = make(map[NodeID]int)
-			local.gradeDAG[round] = slot
-		}
-		if grade > slot[NodeID(node)] {
-			slot[NodeID(node)] = grade
-		}
-
-		local.muGrade.Unlock()
-	}
+type blockPullReq struct {
+	commitReq   commitReq
+	blockPullCh chan<- *Block
 }
 
 type Commitor struct {
-	elector       *Elector
-	commitChannel chan<- *Block
-	localDAG      *LocalDAG
-	commitBlocks  map[crypto.Digest]struct{}
-	curWave       int
-	notify        chan int
-	inner         chan crypto.Digest
-	store         *store.Store
-	N             int
+	commitReqCh <-chan commitReq
+	blockPullCh chan<- blockPullReq
 }
 
-func NewCommitor(electot *Elector, localDAG *LocalDAG, store *store.Store, commitChannel chan<- *Block, N int) *Commitor {
-	c := &Commitor{
-		elector:       electot,
-		localDAG:      localDAG,
-		commitChannel: commitChannel,
-		commitBlocks:  make(map[crypto.Digest]struct{}),
-		curWave:       -1,
-		notify:        make(chan int, 100),
-		store:         store,
-		inner:         make(chan crypto.Digest),
-		N:             N,
-	}
-	go c.run()
-	return c
+func (c *Commitor) commit(req commitReq) {
+	// Send block pull request.
 }
 
 func (c *Commitor) run() {
-
-	go func() {
-		for digest := range c.inner {
-			if block, err := getBlock(c.store, digest); err != nil {
-				logger.Warn.Println(err)
-			} else {
-				if block.Batch.Txs != nil {
-					//BenchMark Log
-					logger.Info.Printf("commit Block round %d node %d batch_id %d \n", block.Header.H, block.Header.Author, block.Batch.ID)
-				}
-				c.commitChannel <- block
-			}
-		}
-	}()
-
-	for num := range c.notify {
-		if num > c.curWave {
-			if ok, leader := c.elector.getLeader(num); ok {
-				var leaderQ [][2]int
-				for i := 1; i <= c.N; i++ {
-					var node int = (int(leader) + i) % c.N
-					if c.localDAG.GetGrade(2*num, node) == GradeTwo {
-						leaderQ = append(leaderQ, [2]int{node, 2 * num})
-					}
-				}
-
-				for i := num - 1; i > c.curWave; i-- {
-					if ok, node := c.elector.getLeader(i); ok {
-						leaderQ = append(leaderQ, [2]int{int(node), i * 2})
-					}
-				}
-				c.commitLeaderQueue(leaderQ)
-				c.curWave = num
-			}
-
+	for {
+		select {
+		case req := <-c.commitReqCh:
+			c.commit(req)
 		}
 	}
-}
-
-func (c *Commitor) commitLeaderQueue(q [][2]int) {
-
-	for i := len(q) - 1; i >= 0; i-- {
-
-		leader, round := q[i][0], q[i][1]
-		var (
-			queue1 []crypto.Digest
-			queue2 []NodeID
-			sortC  []crypto.Digest
-		)
-		if d, ok := c.localDAG.GetReceivedBlock(round, NodeID(leader)); !ok {
-			logger.Error.Println("commitor : not received block")
-			continue
-		} else {
-			queue1, queue2 = append(queue1, d), append(queue2, NodeID(leader))
-			for len(queue1) > 0 {
-
-				n := len(queue1)
-				temp := make([]*crypto.Digest, c.N)
-
-				for n > 0 {
-					block, node := queue1[0], queue2[0]
-					if _, ok := c.commitBlocks[block]; !ok {
-
-						sortC = append(sortC, block)       // seq commit vector
-						c.commitBlocks[block] = struct{}{} // commit flag
-
-						if ref, ok := c.localDAG.GetReceivedBlockReference(round, node); !ok {
-							logger.Error.Println("commitor : not received block reference")
-						} else {
-
-							for d, nodeid := range ref {
-								temp[nodeid] = &d
-							}
-
-						}
-
-					}
-					queue1, queue2 = queue1[1:], queue2[1:]
-					n--
-				} //for
-
-				//next round is pbc round
-				if round%2 == 0 {
-					for j := 0; j < c.N; j++ {
-						if temp[j] != nil {
-							queue1 = append(queue1, *temp[j])
-							queue2 = append(queue2, NodeID(j))
-						}
-					}
-				} else { //next round id grbc round
-					// L := int(c.elector.GetLeader((round / 2)))
-					// for j := 0; j < c.N; j++ {
-					// 	ind := (L + c.N - j) % c.N
-					// 	if temp[ind] != nil {
-					// 		queue1 = append(queue1, *temp[ind])
-					// 		queue2 = append(queue2, NodeID(ind))
-					// 	}
-					// }
-				}
-				round--
-			} //for
-		}
-
-		for i := len(sortC) - 1; i >= 0; i-- {
-			c.inner <- sortC[i] // SeqCommit
-		}
-
-	} //for
-}
-
-func (c *Commitor) NotifyToCommit(waveNum int) {
-	c.notify <- waveNum
 }
