@@ -8,7 +8,7 @@ import (
 type Transmitor struct {
 	sender     *network.Sender
 	receiver   *network.Receiver
-	recvCh     chan Message
+	recvCh     chan NetMessage
 	msgCh      chan *network.NetMessage
 	parameters Parameters
 	committee  Committee
@@ -24,7 +24,7 @@ func NewTransmitor(
 	tr := &Transmitor{
 		sender:     sender,
 		receiver:   receiver,
-		recvCh:     make(chan Message, 1_000),
+		recvCh:     make(chan NetMessage, 1_000),
 		msgCh:      make(chan *network.NetMessage, 1_000),
 		parameters: parameters,
 		committee:  committee,
@@ -38,14 +38,14 @@ func NewTransmitor(
 
 	go func() {
 		for msg := range tr.receiver.RecvChannel() {
-			tr.recvCh <- msg.(Message)
+			tr.recvCh <- msg.(NetMessage)
 		}
 	}()
 
 	return tr
 }
 
-func (tr *Transmitor) Send(from, to NodeID, msg Message) error {
+func (tr *Transmitor) Send(from, to NodeID, msg NetMessage) error {
 	var addr []string
 
 	if to == NONE {
@@ -72,10 +72,10 @@ func (tr *Transmitor) Send(from, to NodeID, msg Message) error {
 	return nil
 }
 
-func (tr *Transmitor) Recv() Message {
+func (tr *Transmitor) Recv() NetMessage {
 	return <-tr.recvCh
 }
 
-func (tr *Transmitor) RecvChannel() chan Message {
+func (tr *Transmitor) RecvChannel() chan NetMessage {
 	return tr.recvCh
 }

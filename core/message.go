@@ -11,6 +11,10 @@ import (
 
 type Message interface {
 	MsgType() int
+}
+
+type NetMessage interface {
+	Message
 	Hash() crypto.Digest
 }
 
@@ -18,7 +22,7 @@ type Header struct {
 	Author    NodeID
 	H         int // Block height
 	R         int // Block round
-	FirstRefH int // Height of the first block of current round
+	FirstRefH int // Height of the first block of round R
 }
 
 type Block struct {
@@ -264,13 +268,22 @@ func (msg *LoopBackMsg) MsgType() int {
 }
 
 const (
-	// Network Messages
+	// Network messages
 	ProposeType int = iota
 	EchoType
 	ElectType
 	RequestBlockType
 	ReplyBlockType
 	LoopBackType
+
+	// Dag & commiter messages
+	CheckReqType
+	RefReqType
+	CommitReqType
+	SubmitReqType
+	BlockReqType
+	LeaderReqType
+	CleanReqType
 
 	TotalNums
 )
@@ -287,4 +300,67 @@ var DefaultNetMsgTypes = map[int]reflect.Type{
 	RequestBlockType: reflect.TypeOf(RequestBlockMsg{}),
 	ReplyBlockType:   reflect.TypeOf(ReplyBlockMsg{}),
 	LoopBackType:     reflect.TypeOf(LoopBackMsg{}),
+}
+
+type checkReq struct {
+	items []Header
+	missRespCh chan<- []Header
+}
+
+func (r *checkReq) MsgType() int {
+	return CheckReqType
+}
+
+type refReq struct {
+	round    int
+	refRespCh chan<- []Header
+}
+
+func (r *refReq) MsgType() int {
+	return RefReqType
+}
+
+type commitReq struct {
+	author NodeID
+	round  int
+}
+
+func (r *commitReq) MsgType() int {
+	return CommitReqType
+}
+
+type submitReq struct {
+	author NodeID
+	height int
+}
+
+func (r *submitReq) MsgType() int {
+	return SubmitReqType
+}
+
+type blockReq struct {
+	author      NodeID
+	height      int
+	blockPullCh chan<- *Block
+}
+
+func (r *blockReq) MsgType() int {
+	return BlockReqType
+}
+
+type leaderReq struct {
+	round        int
+	leaderPullCh chan<- NodeID
+}
+
+func (r *leaderReq) MsgType() int {
+	return LeaderReqType
+}
+
+type cleanReq struct {
+	newWatermark []int
+}
+
+func (r *cleanReq) MsgType() int {
+	return CleanReqType
 }

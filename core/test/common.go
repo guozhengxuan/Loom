@@ -37,8 +37,8 @@ func GetDigest() crypto.Digest {
 	return crypto.NewHasher().Sum256([]byte("123"))
 }
 
-func GetMessage(Typ int, sigService *crypto.SigService) core.Message {
-	var msg core.Message
+func GetMessage(Typ int, sigService *crypto.SigService) core.NetMessage {
+	var msg core.NetMessage
 	switch Typ {
 	case core.EchoType:
 		msg, _ = core.NewEcho(-1, -1, GetDigest(), -1, sigService)
@@ -56,7 +56,7 @@ func GetMessage(Typ int, sigService *crypto.SigService) core.Message {
 	return msg
 }
 
-func DisplayMessage(msg core.Message, t *testing.T) {
+func DisplayMessage(msg core.NetMessage, t *testing.T) {
 	switch msg.MsgType() {
 
 	case core.GRBCProposeType:

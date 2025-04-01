@@ -1,41 +1,31 @@
 package core
 
-import (
-	// "WuKong/crypto"
-	// "WuKong/logger"
-	// "WuKong/store"
-	"sync"
-)
+// "WuKong/crypto"
+// "WuKong/logger"
+// "WuKong/store"
 
 type dag struct {
-	mu *sync.RWMutex
-
 	nodeID    NodeID
 	committee *Committee
 
-	cache     [][]*Block // store blocks of the entire DAG
-	watermark []int      // height of highest committed block
-	anchor    []NodeID   // leader of each round
+	cache     [][]*Block     // store blocks of the entire DAG
+	watermark []int          // height of highest committed block
+	anchor    map[int]NodeID // leader of each round
 
-	blockCh   <-chan *Block
-	refReqCh  <-chan int
-	refRespCh chan<- []Header
+	rwChan <-chan Message
+	submitChan chan<- submitReq
 
-	commitReqCh <-chan commitReq            // commit request channel without buffer
-	pending     map[commitReq]chan<- *Block // register one-shot reply channel for commit requests.
+	pending map[commitReq]chan<- *Block // register one-shot reply channel for commit requests.
 }
 
 func NewDag(nodeID NodeID, committee *Committee) *dag {
 	dag := &dag{
-		mu:          new(sync.RWMutex),
-		nodeID:      nodeID,
-		committee:   committee,
-		cache:       make([][]*Block, committee.Size()),
-		watermark:   make([]int, committee.Size()),
-		blockCh:     make(<-chan *Block),
-		refReqCh:    make(<-chan int),
-		refRespCh:   make(chan<- []Header),
-		commitReqCh: make(<-chan commitReq),
+		nodeID:    nodeID,
+		committee: committee,
+		cache:     make([][]*Block, committee.Size()),
+		watermark: make([]int, committee.Size()),
+		anchor:    make(map[int]NodeID, 4),
+		rwChan:    make(<-chan Message),
 	}
 
 	for i := 0; i < committee.Size(); i++ {
@@ -54,24 +44,21 @@ func (d *dag) get(author NodeID, height int) *Block {
 	return nil
 }
 
-func (d *dag) fetchMissing(items []Header) []Header {
+func (d *dag) handleCheckReq(req *checkReq) {
 	var miss []Header
 
-	for _, b := range items {
+	for _, b := range req.items {
 		index := b.H - d.watermark[b.Author] - 1
 		if index >= len(d.cache[b.Author]) || index >= 0 && d.cache[b.Author][index] == nil {
 			miss = append(miss, b)
 		}
 	}
 
-	return miss
+	req.missRespCh <- miss
 }
 
 // Add the newly received block into local DAG.
-func (d *dag) add(block *Block) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
+func (d *dag) handleBlockReq(block *Block) {
 	b := block.Header
 	index := b.H - d.watermark[b.Author] - 1
 
@@ -84,7 +71,6 @@ func (d *dag) add(block *Block) {
 	if index < oldLen {
 		// Receiving a lagged block.
 		d.cache[b.Author][index] = block
-
 	} else {
 		// Add the up-to-date block to cache, offset by watermark.
 		newLen := index + 1
@@ -92,7 +78,7 @@ func (d *dag) add(block *Block) {
 		d.cache[b.Author][index] = block
 	}
 
-	// Response to block pull channel from commitor.
+	// Response to registered block pull channel.
 	req := commitReq{b.Author, b.H}
 	if replyCh, ok := d.pending[req]; ok {
 		replyCh <- block
@@ -100,17 +86,14 @@ func (d *dag) add(block *Block) {
 }
 
 // Collect references for new block.
-func (d *dag) selectRef(round int) []Header {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
+func (d *dag) handleRefReq(req *refReq) {
 	ref := make([]Header, 0, d.committee.HightThreshold())
 
 	// Check if there are n-f new qualified blocks.
 	for _, line := range d.cache {
 
 		// Ignore nodes from which no blocks of current round are received.
-		if len(line) == 0 || line[len(line)-1].Header.R < round-1 {
+		if len(line) == 0 || line[len(line)-1].Header.R < req.round-1 {
 			continue
 		}
 
@@ -121,8 +104,8 @@ func (d *dag) selectRef(round int) []Header {
 
 		// Strong ref round requires two new blocks received from each node,
 		// while weak ref round requires only one new block.
-		if round%2 == 1 && lastH-lastRefH >= 2 ||
-			round%2 == 0 && lastH-lastRefH >= 1 {
+		if req.round%2 == 1 && lastH-lastRefH >= 2 ||
+			req.round%2 == 0 && lastH-lastRefH >= 1 {
 			ref = append(ref, lastBlockHeader)
 		}
 	}
@@ -135,36 +118,42 @@ func (d *dag) selectRef(round int) []Header {
 		ref = []Header{lastBlockHeader}
 	}
 
-	return ref
+	req.refRespCh <- ref
 }
 
-func (d *dag) commit(round int, leader NodeID) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+func (d *dag) handleCommitReq(req commitReq) {
+	leader := req.author
+	round := req.round
+
+	// Store leaders of each round.
+	d.anchor[round] = leader
 
 	line := d.cache[leader]
 
 	// According to wahoo++, it's safe to submit all previous blocks starting from
 	// the one in the second position before the leader's highest block.
 	if len(line) >= 3 {
-		index := len(line) - 3
-		d.submit(line[index].Header.Author, round, line[index].Header.H)
+		height := d.watermark[leader] + len(line) - 2
+
+		submitReq := submitReq{leader, height}
+
+		d.submitChan <- submitReq
 	}
 }
 
-// Recursively submit block in a tree-traversing way.
-func (d *dag) submit(node NodeID, round, height int) {
-	d.submitAnchor(round)
-	// for h := d.cache
-}
+// // Recursively submit block in a tree-traversing way.
+// func (d *dag) submit(node NodeID, round, height int) {
+// 	d.submitAnchor(round)
+// 	// for h := d.cache
+// }
 
 func (d *dag) submitAnchor(round int) {
 
 }
 
-func (d *dag) handleBlockPullReq(req blockPullReq) {
+func (d *dag) handleBlockPullReq(req blockReq) {
 	author := req.commitReq.author
-	height := req.commitReq.height
+	height := req.commitReq.round
 
 	replyCh := req.blockPullCh
 
@@ -186,7 +175,7 @@ func (d *dag) handleBlockPullReq(req blockPullReq) {
 
 func (d *dag) run() {
 
-	blockPullCh := make(chan blockPullReq)
+	blockPullCh := make(chan blockReq)
 	commitor := Commitor{d.commitReqCh, blockPullCh}
 
 	// Init commitor
@@ -195,40 +184,13 @@ func (d *dag) run() {
 	// Handle requests from core and commitor.
 	for {
 		select {
-		case block := <-d.blockCh:
-			d.add(block)
-		case round := <-d.refReqCh:
-			d.refRespCh <- d.selectRef(round)
-		case req := <-blockPullCh:
-			d.handleBlockPullReq(req)
-		}
-	}
-}
+		case msg := <- d.rwChan:
+			switch msg.MsgType() {
+			case ProposeType:
+				d.add(msg.(*Block))
+			case RefReqType:
 
-type commitReq struct {
-	author NodeID
-	height int
-}
-
-type blockPullReq struct {
-	commitReq   commitReq
-	blockPullCh chan<- *Block
-}
-
-type Commitor struct {
-	commitReqCh <-chan commitReq
-	blockPullCh chan<- blockPullReq
-}
-
-func (c *Commitor) commit(req commitReq) {
-	// Send block pull request.
-}
-
-func (c *Commitor) run() {
-	for {
-		select {
-		case req := <-c.commitReqCh:
-			c.commit(req)
+			}
 		}
 	}
 }

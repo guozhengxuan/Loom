@@ -6,7 +6,7 @@ import (
 )
 
 type aggregator struct {
-	item      []Message
+	item      []NetMessage
 	used      map[NodeID]struct{}
 	committee *Committee
 }
@@ -19,7 +19,7 @@ func NewAggregator(committee *Committee) *aggregator {
 	return ag
 }
 
-func (ag *aggregator) push(author NodeID, msg Message) {
+func (ag *aggregator) push(author NodeID, msg NetMessage) {
 	if _, ok := ag.used[author]; ok {
 		return
 	}
@@ -27,7 +27,7 @@ func (ag *aggregator) push(author NodeID, msg Message) {
 	ag.item = append(ag.item, msg)
 }
 
-func (ag *aggregator) take() []Message {
+func (ag *aggregator) take() []NetMessage {
 	if len(ag.item) == ag.committee.HightThreshold() {
 		return ag.item
 	}
