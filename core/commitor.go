@@ -1,19 +1,20 @@
 package core
 
 type Commitor struct {
-	commitReqCh <-chan commitReq
-	blockPullCh chan<- blockReq
+	submitCh <-chan Slot
+	reqCh chan<- Message
 }
 
-func (c *Commitor) commit(req commitReq) {
-	// Send block pull request.
+func (c *Commitor) commit(slot Slot) {
+	blockCh := make(chan *Block)
+	
 }
 
 func (c *Commitor) run() {
 	for {
 		select {
-		case req := <-c.commitReqCh:
-			c.commit(req)
+		case slot := <-c.submitCh:
+			c.commit(slot)
 		}
 	}
 }

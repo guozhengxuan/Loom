@@ -13,15 +13,20 @@ type Message interface {
 	MsgType() int
 }
 
+// Definition for network messages sent from node to node.
 type NetMessage interface {
 	Message
 	Hash() crypto.Digest
 }
 
+type Slot struct {
+	Author NodeID
+	Height int
+}
+
 type Header struct {
-	Author    NodeID
-	H         int // Block height
-	R         int // Block round
+	Slot      Slot
+	Round     int // Block round
 	FirstRefH int // Height of the first block of round R
 }
 
@@ -41,8 +46,11 @@ func NewBlock(
 	ref []Header,
 	sigService *crypto.SigService,
 ) (*Block, error) {
+
+	slot := Slot{author, height}
+
 	block := &Block{
-		Header: Header{author, height, round, firstH},
+		Header: Header{slot, round, firstH},
 		Batch:  batch,
 		Ref:    ref,
 	}
@@ -72,14 +80,14 @@ func (b *Block) Decode(data []byte) error {
 }
 
 func (b *Block) Verify(committee Committee) bool {
-	return b.Sig.Verify(committee.Name(b.Header.Author), b.Hash())
+	return b.Sig.Verify(committee.Name(b.Header.Slot.Author), b.Hash())
 }
 
 func (b *Block) Hash() crypto.Digest {
 
 	hasher := crypto.NewHasher()
-	hasher.Add(strconv.AppendInt(nil, int64(b.Header.Author), 2))
-	hasher.Add(strconv.AppendInt(nil, int64(b.Header.H), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(b.Header.Slot.Author), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(b.Header.Slot.Height), 2))
 	for _, tx := range b.Batch.Txs {
 		hasher.Add(tx)
 	}
@@ -126,8 +134,8 @@ func (msg *Echo) Verify(committee Committee) bool {
 func (msg *Echo) Hash() crypto.Digest {
 	hasher := crypto.NewHasher()
 	hasher.Add(strconv.AppendInt(nil, int64(msg.Author), 2))
-	hasher.Add(strconv.AppendInt(nil, int64(msg.Header.Author), 2))
-	hasher.Add(strconv.AppendInt(nil, int64(msg.Header.H), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(msg.Header.Slot.Author), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(msg.Header.Slot.Height), 2))
 	return hasher.Sum256(nil)
 }
 
@@ -267,43 +275,9 @@ func (msg *LoopBackMsg) MsgType() int {
 	return LoopBackType
 }
 
-const (
-	// Network messages
-	ProposeType int = iota
-	EchoType
-	ElectType
-	RequestBlockType
-	ReplyBlockType
-	LoopBackType
-
-	// Dag & commiter messages
-	CheckReqType
-	RefReqType
-	CommitReqType
-	SubmitReqType
-	BlockReqType
-	LeaderReqType
-	CleanReqType
-
-	TotalNums
-)
-
-const (
-	Plain int = iota
-	WeakRef
-	StrongRef
-)
-
-var DefaultNetMsgTypes = map[int]reflect.Type{
-	EchoType:         reflect.TypeOf(Echo{}),
-	ElectType:        reflect.TypeOf(Elect{}),
-	RequestBlockType: reflect.TypeOf(RequestBlockMsg{}),
-	ReplyBlockType:   reflect.TypeOf(ReplyBlockMsg{}),
-	LoopBackType:     reflect.TypeOf(LoopBackMsg{}),
-}
-
+// Definition for inner messages passed between core, dag and commitor.
 type checkReq struct {
-	items []Header
+	items      []Header
 	missRespCh chan<- []Header
 }
 
@@ -312,7 +286,7 @@ func (r *checkReq) MsgType() int {
 }
 
 type refReq struct {
-	round    int
+	round     int
 	refRespCh chan<- []Header
 }
 
@@ -329,22 +303,12 @@ func (r *commitReq) MsgType() int {
 	return CommitReqType
 }
 
-type submitReq struct {
-	author NodeID
-	height int
-}
-
-func (r *submitReq) MsgType() int {
-	return SubmitReqType
-}
-
-type blockReq struct {
-	author      NodeID
-	height      int
+type blockPullReq struct {
+	slot        Slot
 	blockPullCh chan<- *Block
 }
 
-func (r *blockReq) MsgType() int {
+func (r *blockPullReq) MsgType() int {
 	return BlockReqType
 }
 
@@ -358,9 +322,40 @@ func (r *leaderReq) MsgType() int {
 }
 
 type cleanReq struct {
+	round int
 	newWatermark []int
 }
 
 func (r *cleanReq) MsgType() int {
 	return CleanReqType
+}
+
+// Define type enum for all messages
+const (
+	// Network messages
+	ProposeType int = iota
+	EchoType
+	ElectType
+	RequestBlockType
+	ReplyBlockType
+	LoopBackType
+
+	// Dag & commiter messages
+	CheckReqType
+	RefReqType
+	CommitReqType
+
+	BlockReqType
+	LeaderReqType
+	CleanReqType
+
+	TotalNums
+)
+
+var DefaultNetMsgTypes = map[int]reflect.Type{
+	EchoType:         reflect.TypeOf(Echo{}),
+	ElectType:        reflect.TypeOf(Elect{}),
+	RequestBlockType: reflect.TypeOf(RequestBlockMsg{}),
+	ReplyBlockType:   reflect.TypeOf(ReplyBlockMsg{}),
+	LoopBackType:     reflect.TypeOf(LoopBackMsg{}),
 }

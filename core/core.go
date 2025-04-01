@@ -18,7 +18,7 @@ type Core struct {
 	store           *store.Store
 	retriever       *Retriever
 	eletor          *Elector
-	dag             *dag
+	dagCh           chan Message
 	loopBackChannel chan *Block
 	commitChannel   chan<- *Block
 	proposedNotify  map[int]*sync.Mutex
@@ -45,10 +45,10 @@ func NewCore(
 		transmitor:      transmitor,
 		sigService:      sigService,
 		store:           store,
+		dagCh:           make(chan Message),
 		loopBackChannel: loopBackChannel,
 		commitChannel:   commitChannel,
 		proposedNotify:  make(map[int]*sync.Mutex),
-		dag:             NewDag(nodeID, &committee),
 		voteAg:          make(map[int]*aggregator),
 	}
 
@@ -80,23 +80,33 @@ func getBlock(store *store.Store, digest crypto.Digest) (*Block, error) {
 	return block, nil
 }
 
-func (corer *Core) generatorBlock(height, refRound int) (*Block, error) {
-	logger.Debug.Printf("procesing generatorBlock height %d round %d \n", height, refRound)
+func (corer *Core) generatorBlock(height, round, oldFirstRefH int) (*Block, error) {
+	logger.Debug.Printf("procesing generatorBlock height %d round %d \n", height, round)
 
-	ref := corer.dag.selectRef(refRound)
+	respCh := make(chan []Header)
+	corer.dagCh <- &refReq{round, respCh}
 
-	block, err := NewBlock(corer.nodeID, height, corer.txpool.GetBatch(), ref, corer.sigService)
+	ref := <-respCh
+
+	firstRefH := oldFirstRefH
+	// If collected n-f refs, enter a new round.
+	if len(ref) > 1 {
+		firstRefH = height
+		round++
+	}
+
+	block, err := NewBlock(corer.nodeID, height, round, firstRefH, corer.txpool.GetBatch(), ref, corer.sigService)
 	return block, err
 }
 
 func (corer *Core) handlePropose(block *Block) error {
-	b := block.Header
+	b := block.Header.Slot
 
-	logger.Debug.Printf("procesing propose height %d node %d \n", b.H, b.Author)
+	logger.Debug.Printf("procesing propose height %d node %d \n", b.Height, b.Author)
 
 	// Verify signature.
 	if !block.Verify(corer.committee) {
-		return ErrSignature(block.MsgType(), b.H, b.Author)
+		return ErrSignature(block.MsgType(), b.Height, b.Author)
 	}
 
 	// Store Block.
@@ -112,29 +122,33 @@ func (corer *Core) handlePropose(block *Block) error {
 	corer.transmitor.Send(corer.nodeID, b.Author, echo)
 
 	// Add to local DAG.
-	corer.dag.add(block)
+	corer.dagCh <- block
 
 	return nil
 }
 
 func (corer *Core) handleEcho(echo *Echo) error {
-	b := echo.Header
-	logger.Debug.Printf("procesing echo height %d node %d \n", b.H, echo.Author)
+	b := echo.Header.Slot
+	logger.Debug.Printf("procesing echo height %d node %d \n", b.Height, echo.Author)
 
 	// Verify signature
 	if !echo.Verify(corer.committee) {
-		return ErrSignature(echo.MsgType(), b.H, echo.Author)
+		return ErrSignature(echo.MsgType(), b.Height, echo.Author)
 	}
 
 	// Aggregate.
-	ag, ok := corer.voteAg[b.H]
+	ag, ok := corer.voteAg[b.Height]
 	if !ok {
 		ag = NewAggregator(&corer.committee)
-		corer.voteAg[b.H] = ag
+		corer.voteAg[b.Height] = ag
 	}
+
 	ag.push(echo.Author, echo)
+
+	// This is where the protocol differs from Wahoo, the core will immediately
+	// produce next block without waiting for n-f refs as Wahoo does.
 	if votes := ag.take(); len(votes) != 0 {
-		// corer.localDAG.UpdateGrade()
+		corer.generatorBlock(b.Height+1, echo.Header.Round, echo.Header.FirstRefH)
 	}
 
 	return nil

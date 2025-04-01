@@ -12,10 +12,10 @@ type dag struct {
 	watermark []int          // height of highest committed block
 	anchor    map[int]NodeID // leader of each round
 
-	rwChan <-chan Message
-	submitChan chan<- submitReq
+	opCh     <-chan Message
+	submitCh chan Slot
 
-	pending map[commitReq]chan<- *Block // register one-shot reply channel for commit requests.
+	pending map[Slot]chan<- *Block // register one-shot reply channel for commit requests.
 }
 
 func NewDag(nodeID NodeID, committee *Committee) *dag {
@@ -25,7 +25,8 @@ func NewDag(nodeID NodeID, committee *Committee) *dag {
 		cache:     make([][]*Block, committee.Size()),
 		watermark: make([]int, committee.Size()),
 		anchor:    make(map[int]NodeID, 4),
-		rwChan:    make(<-chan Message),
+		opCh:      make(<-chan Message),
+		submitCh:  make(chan Slot),
 	}
 
 	for i := 0; i < committee.Size(); i++ {
@@ -47,10 +48,13 @@ func (d *dag) get(author NodeID, height int) *Block {
 func (d *dag) handleCheckReq(req *checkReq) {
 	var miss []Header
 
-	for _, b := range req.items {
-		index := b.H - d.watermark[b.Author] - 1
+	for _, header := range req.items {
+		b := header.Slot
+
+		index := b.Height - d.watermark[b.Author] - 1
+
 		if index >= len(d.cache[b.Author]) || index >= 0 && d.cache[b.Author][index] == nil {
-			miss = append(miss, b)
+			miss = append(miss, header)
 		}
 	}
 
@@ -58,9 +62,10 @@ func (d *dag) handleCheckReq(req *checkReq) {
 }
 
 // Add the newly received block into local DAG.
-func (d *dag) handleBlockReq(block *Block) {
-	b := block.Header
-	index := b.H - d.watermark[b.Author] - 1
+func (d *dag) handleBlockPushReq(block *Block) {
+	b := block.Header.Slot
+
+	index := b.Height - d.watermark[b.Author] - 1
 
 	if index < 0 {
 		return
@@ -79,8 +84,7 @@ func (d *dag) handleBlockReq(block *Block) {
 	}
 
 	// Response to registered block pull channel.
-	req := commitReq{b.Author, b.H}
-	if replyCh, ok := d.pending[req]; ok {
+	if replyCh, ok := d.pending[b]; ok {
 		replyCh <- block
 	}
 }
@@ -93,13 +97,13 @@ func (d *dag) handleRefReq(req *refReq) {
 	for _, line := range d.cache {
 
 		// Ignore nodes from which no blocks of current round are received.
-		if len(line) == 0 || line[len(line)-1].Header.R < req.round-1 {
+		if len(line) == 0 || line[len(line)-1].Header.Round < req.round-1 {
 			continue
 		}
 
 		lastBlockHeader := line[len(line)-1].Header
 
-		lastH := lastBlockHeader.H
+		lastH := lastBlockHeader.Slot.Height
 		lastRefH := lastBlockHeader.FirstRefH
 
 		// Strong ref round requires two new blocks received from each node,
@@ -121,7 +125,7 @@ func (d *dag) handleRefReq(req *refReq) {
 	req.refRespCh <- ref
 }
 
-func (d *dag) handleCommitReq(req commitReq) {
+func (d *dag) handleCommitReq(req *commitReq) {
 	leader := req.author
 	round := req.round
 
@@ -135,48 +139,57 @@ func (d *dag) handleCommitReq(req commitReq) {
 	if len(line) >= 3 {
 		height := d.watermark[leader] + len(line) - 2
 
-		submitReq := submitReq{leader, height}
-
-		d.submitChan <- submitReq
+		b := Slot{leader, height}
+		d.submitCh <- b
 	}
 }
 
-// // Recursively submit block in a tree-traversing way.
-// func (d *dag) submit(node NodeID, round, height int) {
-// 	d.submitAnchor(round)
-// 	// for h := d.cache
-// }
-
-func (d *dag) submitAnchor(round int) {
-
-}
-
-func (d *dag) handleBlockPullReq(req blockReq) {
-	author := req.commitReq.author
-	height := req.commitReq.round
-
+func (d *dag) handleBlockPullReq(req *blockPullReq) {
+	b := req.slot
 	replyCh := req.blockPullCh
 
 	// Empty reply for committed blocks.
-	if height <= d.watermark[author] {
+	if b.Height <= d.watermark[b.Author] {
 		replyCh <- nil
 		return
 	}
 
-	index := height - d.watermark[author] - 1
+	index := b.Height - d.watermark[b.Author] - 1
 
-	// Reply block if received, otherwise wait for outer core to receive.
-	if index < len(d.cache[author]) && d.cache[author][index] != nil {
-		replyCh <- d.cache[author][index]
+	// Reply the block if received, otherwise wait for outer core to deliver.
+	if index < len(d.cache[b.Author]) && d.cache[b.Author][index] != nil {
+		replyCh <- d.cache[b.Author][index]
 	} else {
-		d.pending[req.commitReq] = replyCh
+		d.pending[b] = replyCh
+	}
+}
+
+func (d *dag) handleLeaderReq(req *leaderReq) {
+	req.leaderPullCh <- d.anchor[req.round]
+}
+
+func (d *dag) handleCleanReq(req *cleanReq) {
+
+	// Remove committed blocks and update watermark.
+	for id := range d.watermark {
+
+		cutIndex := req.newWatermark[id] - d.watermark[id] - 1
+
+		d.cache[id] = append([]*Block{}, d.cache[id][cutIndex:]...)
+		d.watermark[id] = req.newWatermark[id]
+	}
+
+	// Remove committed anchors.
+	for r := range d.anchor {
+		if r < req.round {
+			delete(d.anchor, r)
+		}
 	}
 }
 
 func (d *dag) run() {
-
-	blockPullCh := make(chan blockReq)
-	commitor := Commitor{d.commitReqCh, blockPullCh}
+	commitReqCh := make(chan Message)
+	commitor := Commitor{d.submitCh, commitReqCh}
 
 	// Init commitor
 	go commitor.run()
@@ -184,12 +197,20 @@ func (d *dag) run() {
 	// Handle requests from core and commitor.
 	for {
 		select {
-		case msg := <- d.rwChan:
+		case msg := <-d.opCh:
 			switch msg.MsgType() {
 			case ProposeType:
-				d.add(msg.(*Block))
+				d.handleBlockPushReq(msg.(*Block))
 			case RefReqType:
-
+				d.handleRefReq(msg.(*refReq))
+			case CommitReqType:
+				d.handleCommitReq(msg.(*commitReq))
+			case BlockReqType:
+				d.handleBlockPullReq(msg.(*blockPullReq))
+			case LeaderReqType:
+				d.handleLeaderReq(msg.(*leaderReq))
+			case CleanReqType:
+				d.handleCleanReq(msg.(*cleanReq))
 			}
 		}
 	}
