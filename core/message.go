@@ -146,14 +146,14 @@ func (msg *Echo) MsgType() int {
 // Elect
 type Elect struct {
 	Author   NodeID
-	RefRound int
+	Round    int
 	SigShare crypto.SignatureShare
 }
 
 func NewElectMsg(Author NodeID, Round int, sigService *crypto.SigService) (*Elect, error) {
 	e := &Elect{
-		Author:   Author,
-		RefRound: Round,
+		Author: Author,
+		Round:  Round,
 	}
 	share, err := sigService.RequestTsSugnature(e.Hash())
 	if err != nil {
@@ -170,7 +170,7 @@ func (e *Elect) Verify() bool {
 
 func (e *Elect) Hash() crypto.Digest {
 	hasher := crypto.NewHasher()
-	hasher.Add(strconv.AppendInt(nil, int64(e.RefRound), 2))
+	hasher.Add(strconv.AppendInt(nil, int64(e.Round), 2))
 	return hasher.Sum256(nil)
 }
 
@@ -295,7 +295,7 @@ func (r *refReq) MsgType() int {
 }
 
 type commitReq struct {
-	author NodeID
+	leader NodeID
 	round  int
 }
 
@@ -322,7 +322,7 @@ func (r *leaderReq) MsgType() int {
 }
 
 type cleanReq struct {
-	round int
+	round        int
 	newWatermark []int
 }
 

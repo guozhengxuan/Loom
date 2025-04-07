@@ -126,7 +126,7 @@ func (d *dag) handleRefReq(req *refReq) {
 }
 
 func (d *dag) handleCommitReq(req *commitReq) {
-	leader := req.author
+	leader := req.leader
 	round := req.round
 
 	// Store leaders of each round.

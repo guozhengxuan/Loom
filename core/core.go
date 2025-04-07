@@ -172,19 +172,15 @@ func (corer *Core) invokeElect(refRound int) error {
 }
 
 func (corer *Core) handleElect(elect *Elect) error {
-	logger.Debug.Printf("procesing elect round %d node %d \n", elect.RefRound, elect.Author)
+	logger.Debug.Printf("procesing elect round %d node %d \n", elect.Round, elect.Author)
 
 	if err := corer.eletor.add(elect); err != nil {
 		return err
 	}
 
-	ok, leader := corer.eletor.getLeader(elect.RefRound)
+	ok, leader := corer.eletor.getLeader(elect.Round)
 	if ok {
-		grade := corer.localDAG.GetGrade(elect.RefRound-1, int(leader))
-		logger.Debug.Printf("Elector: round %d leader %d grade %d \n", elect.RefRound, leader, grade)
-		if grade == 1 {
-			corer.commitor.NotifyToCommit(elect.RefRound)
-		}
+		corer.dagCh <- &commitReq{leader, elect.Round}
 	}
 
 	return nil
@@ -193,7 +189,7 @@ func (corer *Core) handleElect(elect *Elect) error {
 func (corer *Core) handleRequestBlock(request *RequestBlockMsg) error {
 	logger.Debug.Println("procesing block request")
 
-	//Step 1: verify signature
+	// Verify signature
 	if !request.Verify(corer.committee) {
 		return ErrSignature(request.MsgType(), -1, request.Author)
 	}
@@ -206,20 +202,16 @@ func (corer *Core) handleRequestBlock(request *RequestBlockMsg) error {
 func (corer *Core) handleReplyBlock(reply *ReplyBlockMsg) error {
 	logger.Debug.Println("procesing block reply")
 
-	//Step 1: verify signature
+	// Verify signature
 	if !reply.Verify(corer.committee) {
 		return ErrSignature(reply.MsgType(), -1, reply.Author)
 	}
 
 	for _, block := range reply.Blocks {
-		if block.Ref.Round%2 == 0 {
-			corer.localDAG.UpdateGrade(block.Height, int(block.Author), GradeOne)
-		}
-
-		//maybe execute more one
 		storeBlock(corer.store, block)
 
 		// Add block to DAG.
+		corer.handlePropose(block)
 	}
 
 	go corer.retriever.processReply(reply)
@@ -228,15 +220,18 @@ func (corer *Core) handleReplyBlock(reply *ReplyBlockMsg) error {
 }
 
 func (corer *Core) handleLoopBack(block *Block) error {
-	logger.Debug.Printf("procesing block loop back round %d node %d \n", block.Height, block.Author)
+	b := block.Header.Slot
+
+	logger.Debug.Printf("procesing block loop back round %d node %d \n", b.Height, b.Author)
 
 	// Add block to DAG.
+	corer.handlePropose(block)
 
 	return nil
 }
 
 func (corer *Core) start() error {
-	block, err := corer.generatorBlock(0, 0)
+	block, err := corer.generatorBlock(0, 0, 0)
 	if err != nil {
 		return err
 	}
@@ -249,6 +244,7 @@ func (corer *Core) start() error {
 
 func (corer *Core) Run() {
 	if corer.nodeID >= NodeID(corer.parameters.Faults) {
+
 		// Propose the first block.
 		corer.start()
 

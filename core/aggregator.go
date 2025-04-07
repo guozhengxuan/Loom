@@ -2,7 +2,6 @@ package core
 
 import (
 	"WuKong/crypto"
-	"sync"
 )
 
 type aggregator struct {
@@ -35,7 +34,6 @@ func (ag *aggregator) take() []NetMessage {
 }
 
 type Elector struct {
-	mu         *sync.RWMutex
 	leader     map[int]NodeID
 	ag         map[int]*aggregator
 	sigService *crypto.SigService
@@ -44,7 +42,6 @@ type Elector struct {
 
 func NewElector(sigService *crypto.SigService, committee Committee) *Elector {
 	return &Elector{
-		mu:         &sync.RWMutex{},
 		leader:     make(map[int]NodeID),
 		ag:         make(map[int]*aggregator),
 		sigService: sigService,
@@ -53,10 +50,7 @@ func NewElector(sigService *crypto.SigService, committee Committee) *Elector {
 }
 
 func (e *Elector) add(elect *Elect) error {
-	round := elect.RefRound
-
-	e.mu.Lock()
-	defer e.mu.RUnlock()
+	round := elect.Round
 
 	a, ok := e.ag[round]
 	if !ok {
@@ -89,8 +83,6 @@ func (e *Elector) reveal(sig []byte) NodeID {
 }
 
 func (e *Elector) getLeader(refRound int) (bool, NodeID) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
 	if leader, ok := e.leader[refRound]; ok {
 		return true, leader
 	}
