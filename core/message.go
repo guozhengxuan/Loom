@@ -323,7 +323,7 @@ func (r *leaderReq) MsgType() int {
 
 type cleanReq struct {
 	round        int
-	newWatermark []int
+	newWatermark map[NodeID]int
 }
 
 func (r *cleanReq) MsgType() int {

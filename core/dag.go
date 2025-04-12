@@ -9,8 +9,8 @@ type dag struct {
 	committee *Committee
 
 	cache     [][]*Block     // store blocks of the entire DAG
-	watermark []int          // height of highest committed block
-	anchor    map[int]NodeID // leader of each round
+	watermark map[NodeID]int          // height of highest committed block
+	anchor    map[int]NodeID // highest leader block of each round that is safe to commit
 
 	opCh     <-chan Message
 	submitCh chan Slot
@@ -18,19 +18,19 @@ type dag struct {
 	pending map[Slot]chan<- *Block // register one-shot reply channel for commit requests.
 }
 
-func NewDag(nodeID NodeID, committee *Committee) *dag {
+func NewDag(nodeID NodeID, committee *Committee, opCh <-chan Message, submitCh chan Slot) *dag {
 	dag := &dag{
 		nodeID:    nodeID,
 		committee: committee,
 		cache:     make([][]*Block, committee.Size()),
-		watermark: make([]int, committee.Size()),
+		watermark: make(map[NodeID]int, committee.Size()),
 		anchor:    make(map[int]NodeID, 4),
-		opCh:      make(<-chan Message),
-		submitCh:  make(chan Slot),
+		opCh:      opCh,
+		submitCh:  submitCh,
 	}
 
 	for i := 0; i < committee.Size(); i++ {
-		dag.watermark[i] = -1
+		dag.watermark[NodeID(i)] = -1
 	}
 
 	return dag
@@ -195,23 +195,20 @@ func (d *dag) run() {
 	go commitor.run()
 
 	// Handle requests from core and commitor.
-	for {
-		select {
-		case msg := <-d.opCh:
-			switch msg.MsgType() {
-			case ProposeType:
-				d.handleBlockPushReq(msg.(*Block))
-			case RefReqType:
-				d.handleRefReq(msg.(*refReq))
-			case CommitReqType:
-				d.handleCommitReq(msg.(*commitReq))
-			case BlockReqType:
-				d.handleBlockPullReq(msg.(*blockPullReq))
-			case LeaderReqType:
-				d.handleLeaderReq(msg.(*leaderReq))
-			case CleanReqType:
-				d.handleCleanReq(msg.(*cleanReq))
-			}
+	for msg := range d.opCh {
+		switch msg.MsgType() {
+		case ProposeType:
+			d.handleBlockPushReq(msg.(*Block))
+		case RefReqType:
+			d.handleRefReq(msg.(*refReq))
+		case CommitReqType:
+			d.handleCommitReq(msg.(*commitReq))
+		case BlockReqType:
+			d.handleBlockPullReq(msg.(*blockPullReq))
+		case LeaderReqType:
+			d.handleLeaderReq(msg.(*leaderReq))
+		case CleanReqType:
+			d.handleCleanReq(msg.(*cleanReq))
 		}
 	}
 }

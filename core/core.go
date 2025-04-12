@@ -37,6 +37,13 @@ func NewCore(
 ) *Core {
 
 	loopBackChannel := make(chan *Block, 1_000)
+	dagCh := make(chan Message, 10_000)
+	submitCh := make(chan Slot)
+
+	// Init dag.
+	dag := NewDag(nodeID, &committee, dagCh, submitCh)
+	go dag.run()
+
 	corer := &Core{
 		nodeID:          nodeID,
 		committee:       committee,
@@ -45,7 +52,7 @@ func NewCore(
 		transmitor:      transmitor,
 		sigService:      sigService,
 		store:           store,
-		dagCh:           make(chan Message),
+		dagCh:           dagCh,
 		loopBackChannel: loopBackChannel,
 		commitChannel:   commitChannel,
 		proposedNotify:  make(map[int]*sync.Mutex),
@@ -272,6 +279,7 @@ func (corer *Core) Run() {
 					err = corer.handleLoopBack(block)
 				}
 			}
+			
 			if err != nil {
 				logger.Warn.Println(err)
 			}
