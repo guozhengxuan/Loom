@@ -1,9 +1,9 @@
 package config
 
 import (
-	"WuKong/core"
-	"WuKong/crypto"
-	"WuKong/pool"
+	"Wahoo++/core"
+	"Wahoo++/crypto"
+	"Wahoo++/pool"
 	"encoding/json"
 	"fmt"
 	"os"

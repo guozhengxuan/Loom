@@ -1,64 +1,64 @@
 package core
 
 import (
-	"WuKong/crypto"
+	"Wahoo++/crypto"
 )
 
-type aggregator struct {
-	item      []NetMessage
-	used      map[NodeID]struct{}
-	committee *Committee
+type Aggregator struct {
+	Item      []NetMessage
+	Used      map[NodeID]struct{}
+	Committee *Committee
 }
 
-func NewAggregator(committee *Committee) *aggregator {
-	ag := &aggregator{
-		used:      make(map[NodeID]struct{}),
-		committee: committee,
+func NewAggregator(committee *Committee) *Aggregator {
+	ag := &Aggregator{
+		Used:      make(map[NodeID]struct{}),
+		Committee: committee,
 	}
 	return ag
 }
 
-func (ag *aggregator) push(author NodeID, msg NetMessage) {
-	if _, ok := ag.used[author]; ok {
+func (ag *Aggregator) Push(author NodeID, msg NetMessage) {
+	if _, ok := ag.Used[author]; ok {
 		return
 	}
-	ag.used[author] = struct{}{}
-	ag.item = append(ag.item, msg)
+	ag.Used[author] = struct{}{}
+	ag.Item = append(ag.Item, msg)
 }
 
-func (ag *aggregator) take() []NetMessage {
-	if len(ag.item) == ag.committee.HightThreshold() {
-		return ag.item
+func (ag *Aggregator) Take() []NetMessage {
+	if len(ag.Item) == ag.Committee.HightThreshold() {
+		return ag.Item
 	}
 	return nil
 }
 
 type Elector struct {
 	leader     map[int]NodeID
-	ag         map[int]*aggregator
+	ag         map[int]*Aggregator
 	sigService *crypto.SigService
-	committee  Committee
+	committee  *Committee
 }
 
-func NewElector(sigService *crypto.SigService, committee Committee) *Elector {
+func NewElector(sigService *crypto.SigService, committee *Committee) *Elector {
 	return &Elector{
 		leader:     make(map[int]NodeID),
-		ag:         make(map[int]*aggregator),
+		ag:         make(map[int]*Aggregator),
 		sigService: sigService,
 		committee:  committee,
 	}
 }
 
-func (e *Elector) add(elect *Elect) error {
+func (e *Elector) Add(elect *Elect) error {
 	round := elect.Round
 
 	a, ok := e.ag[round]
 	if !ok {
-		a = NewAggregator(&e.committee)
+		a = NewAggregator(e.committee)
 		e.ag[round] = a
 	}
 
-	msg := a.take()
+	msg := a.Take()
 	if len(msg) == 0 {
 		return nil
 	}
@@ -69,12 +69,12 @@ func (e *Elector) add(elect *Elect) error {
 		return err
 	}
 
-	e.leader[round] = e.reveal(sig)
+	e.leader[round] = e.Reveal(sig)
 
 	return nil
 }
 
-func (e *Elector) reveal(sig []byte) NodeID {
+func (e *Elector) Reveal(sig []byte) NodeID {
 	var seed NodeID = 0
 	for i := 0; i < 4; i++ {
 		seed = seed<<8 + NodeID(sig[i])
@@ -82,8 +82,8 @@ func (e *Elector) reveal(sig []byte) NodeID {
 	return seed % NodeID(e.committee.Size())
 }
 
-func (e *Elector) getLeader(refRound int) (bool, NodeID) {
-	if leader, ok := e.leader[refRound]; ok {
+func (e *Elector) TryGetLeader(round int) (bool, NodeID) {
+	if leader, ok := e.leader[round]; ok {
 		return true, leader
 	}
 	return false, NONE

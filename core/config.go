@@ -1,11 +1,11 @@
 package core
 
-import "WuKong/crypto"
+import "Wahoo++/crypto"
 
 const (
 	GradeZero = 0
-	GradeOne = 1
-	GradeTwo = 2
+	GradeOne  = 1
+	GradeTwo  = 2
 )
 
 type Parameters struct {

@@ -1,9 +1,5 @@
 package core
 
-// "WuKong/crypto"
-// "WuKong/logger"
-// "WuKong/store"
-
 type dag struct {
 	nodeID    NodeID
 	committee *Committee

@@ -1,9 +1,9 @@
 package main
 
 import (
-	"WuKong/config"
-	"WuKong/logger"
-	"WuKong/node"
+	"Wahoo++/config"
+	"Wahoo++/logger"
+	"Wahoo++/node"
 
 	"github.com/spf13/cobra"
 )

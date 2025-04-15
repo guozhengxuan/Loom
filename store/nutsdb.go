@@ -1,7 +1,7 @@
 package store
 
 import (
-	"WuKong/logger"
+	"Wahoo++/logger"
 
 	"github.com/nutsdb/nutsdb"
 )

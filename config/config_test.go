@@ -1,7 +1,7 @@
 package config
 
 import (
-	"WuKong/crypto"
+	"Wahoo++/crypto"
 	"fmt"
 	"testing"
 )

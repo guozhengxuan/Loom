@@ -1,75 +1,79 @@
-package test
+package core
 
 import (
-	"WuKong/core"
-	"WuKong/crypto"
-	"WuKong/logger"
-	"WuKong/pool"
+	"Wahoo++/config"
+	"Wahoo++/core"
+	"Wahoo++/crypto"
+	"Wahoo++/logger"
+	"Wahoo++/pool"
+	"sync"
 	"testing"
 )
 
-func InitConfig() {
+var once sync.Once
+
+func initTestConifg() {
 	logger.SetLevel(logger.TestLevel)
 }
 
-func GetBatch(batchSize int) pool.Batch {
-	batch := pool.Batch{
-		ID: 0,
-	}
+func getCommittee() *core.Committee {
+	var committee core.Committee
+	once.Do(func() {
+		committee, _, _ = config.GenDefaultCommittee(4)
+	})
+	return &committee
+}
+
+func getBatch(batchSize int) pool.Batch {
+	batch := pool.Batch{ID: 0}
 	for i := 0; i < batchSize; i++ {
 		batch.Txs = append(batch.Txs, make(pool.Transaction, 16))
 	}
 	return batch
 }
 
-func GetBlock(batchSize int) *core.Block {
+func getBlock(batchSize int) *core.Block {
 	block := &core.Block{
-		Author: -1,
-		Height: -1,
-		Batch:  GetBatch(batchSize),
-		Ref:    make(map[crypto.Digest]core.NodeID),
+		Header: core.Header{
+			Slot:      core.Slot{Author: -1, Height: -1},
+			Round:     0,
+			FirstRefH: 0,
+		},
+		Batch: getBatch(batchSize),
+		Ref:   make([]core.Header, 0),
 	}
-	block.Ref[block.Hash()] = -1
 	return block
 }
 
-func GetDigest() crypto.Digest {
+func getDigest() crypto.Digest {
 	return crypto.NewHasher().Sum256([]byte("123"))
 }
 
-func GetMessage(Typ int, sigService *crypto.SigService) core.NetMessage {
+func getMsg(Typ int, sigService *crypto.SigService) core.NetMessage {
 	var msg core.NetMessage
 	switch Typ {
 	case core.EchoType:
-		msg, _ = core.NewEcho(-1, -1, GetDigest(), -1, sigService)
+		msg, _ = core.NewEcho(core.NodeID(-1), getBlock(10), sigService)
 	case core.ProposeType:
-		msg, _ = core.NewPBCProposeMsg(-1, -1, GetBlock(10), sigService)
+		msg = getBlock(10)
 	case core.ReplyBlockType:
-		msg, _ = core.NewReplyBlockMsg(-1, []*core.Block{GetBlock(10)}, -1, sigService)
+		msg, _ = core.NewReplyBlockMsg(-1, []*core.Block{getBlock(10)}, -1, sigService)
 	case core.RequestBlockType:
-		msg, _ = core.NewRequestBlock(-1, []crypto.Digest{GetDigest()}, -1, 0, sigService)
+		msg, _ = core.NewRequestBlock(-1, []crypto.Digest{getDigest()}, -1, 0, sigService)
 	case core.ElectType:
 		msg, _ = core.NewElectMsg(-1, -1, sigService)
-	default:
-		msg, _ = core.NewGRBCProposeMsg(-1, -1, GetBlock(10), sigService)
 	}
 	return msg
 }
 
-func DisplayMessage(msg core.NetMessage, t *testing.T) {
+func displayMsg(msg core.NetMessage, t *testing.T) {
 	switch msg.MsgType() {
 
-	case core.GRBCProposeType:
-		temp := msg.(*core.GRBCProposeMsg)
-		t.Logf("%v \n", temp)
 	case core.EchoType:
 		temp := msg.(*core.Echo)
 		t.Logf("%v \n", temp)
-	case core.ReadyType:
-		temp := msg.(*core.ReadyMsg)
-		t.Logf("%v \n", temp)
-	case core.PBCProposeType:
-		temp := msg.(*core.PBCProposeMsg)
+	case core.ProposeType:
+		temp := msg.(*core.Block)
 		t.Logf("%v \n", temp)
 	case core.ElectType:
 		temp := msg.(*core.Elect)

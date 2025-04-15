@@ -1,7 +1,7 @@
 package pool
 
 import (
-	"WuKong/logger"
+	"Wahoo++/logger"
 	"time"
 )
 

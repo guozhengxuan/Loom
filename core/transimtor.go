@@ -1,7 +1,7 @@
 package core
 
 import (
-	"WuKong/network"
+	"Wahoo++/network"
 	"time"
 )
 

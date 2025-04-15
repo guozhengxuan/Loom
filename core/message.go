@@ -1,8 +1,8 @@
 package core
 
 import (
-	"WuKong/crypto"
-	"WuKong/pool"
+	"Wahoo++/crypto"
+	"Wahoo++/pool"
 	"bytes"
 	"encoding/gob"
 	"reflect"

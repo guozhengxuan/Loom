@@ -1,7 +1,7 @@
 package network
 
 import (
-	"WuKong/logger"
+	"Wahoo++/logger"
 	"io"
 	"net"
 )

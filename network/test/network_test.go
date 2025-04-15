@@ -1,8 +1,8 @@
-package test
+package network_test
 
 import (
-	"WuKong/core"
-	"WuKong/network"
+	"Wahoo++/core"
+	"Wahoo++/network"
 	"sync"
 	"testing"
 	"time"
@@ -26,7 +26,7 @@ func TestNetwork(t *testing.T) {
 			msg := &network.NetMessage{
 				Msg: &core.Echo{
 					Author: 1,
-					Header: core.Header{Author: 1},
+					Header: core.Header{Slot: core.Slot{Author: 1, Height: 1}, Round: 0, FirstRefH: 0},
 				},
 				Address: []string{addr},
 			}

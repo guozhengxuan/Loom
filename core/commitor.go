@@ -1,7 +1,7 @@
 package core
 
 import (
-	"WuKong/logger"
+	"Wahoo++/logger"
 	"sort"
 )
 

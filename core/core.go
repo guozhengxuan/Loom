@@ -1,10 +1,10 @@
 package core
 
 import (
-	"WuKong/crypto"
-	"WuKong/logger"
-	"WuKong/pool"
-	"WuKong/store"
+	"Wahoo++/crypto"
+	"Wahoo++/logger"
+	"Wahoo++/pool"
+	"Wahoo++/store"
 	"sync"
 )
 
@@ -22,7 +22,7 @@ type Core struct {
 	loopBackChannel chan *Block
 	commitChannel   chan<- *Block
 	proposedNotify  map[int]*sync.Mutex
-	voteAg          map[int]*aggregator
+	voteAg          map[int]*Aggregator
 }
 
 func NewCore(
@@ -40,7 +40,7 @@ func NewCore(
 	dagCh := make(chan Message, 10_000)
 	submitCh := make(chan Slot)
 
-	// Init dag.
+	// Init and run dag.
 	dag := NewDag(nodeID, &committee, dagCh, submitCh)
 	go dag.run()
 
@@ -56,11 +56,11 @@ func NewCore(
 		loopBackChannel: loopBackChannel,
 		commitChannel:   commitChannel,
 		proposedNotify:  make(map[int]*sync.Mutex),
-		voteAg:          make(map[int]*aggregator),
+		voteAg:          make(map[int]*Aggregator),
 	}
 
 	corer.retriever = NewRetriever(nodeID, store, transmitor, sigService, parameters, loopBackChannel)
-	corer.eletor = NewElector(sigService, committee)
+	corer.eletor = NewElector(sigService, &committee)
 
 	return corer
 }
@@ -90,15 +90,19 @@ func getBlock(store *store.Store, digest crypto.Digest) (*Block, error) {
 func (corer *Core) generatorBlock(height, round, oldFirstRefH int) (*Block, error) {
 	logger.Debug.Printf("procesing generatorBlock height %d round %d \n", height, round)
 
+	// Request refs from dag.
 	respCh := make(chan []Header)
 	corer.dagCh <- &refReq{round, respCh}
-
 	ref := <-respCh
 
-	firstRefH := oldFirstRefH
 	// If collected n-f refs, enter a new round.
+	firstRefH := oldFirstRefH
 	if len(ref) > 1 {
 		firstRefH = height
+
+		// Elect the leader of last round
+		corer.invokeElect(round)
+
 		round++
 	}
 
@@ -114,11 +118,6 @@ func (corer *Core) handlePropose(block *Block) error {
 	// Verify signature.
 	if !block.Verify(corer.committee) {
 		return ErrSignature(block.MsgType(), b.Height, b.Author)
-	}
-
-	// Store Block.
-	if err := storeBlock(corer.store, block); err != nil {
-		return err
 	}
 
 	// Send echo.
@@ -150,23 +149,23 @@ func (corer *Core) handleEcho(echo *Echo) error {
 		corer.voteAg[b.Height] = ag
 	}
 
-	ag.push(echo.Author, echo)
+	ag.Push(echo.Author, echo)
 
 	// This is where the protocol differs from Wahoo, the core will immediately
 	// produce next block without waiting for n-f refs as Wahoo does.
-	if votes := ag.take(); len(votes) != 0 {
+	if votes := ag.Take(); len(votes) != 0 {
 		corer.generatorBlock(b.Height+1, echo.Header.Round, echo.Header.FirstRefH)
 	}
 
 	return nil
 }
 
-func (corer *Core) invokeElect(refRound int) error {
+func (corer *Core) invokeElect(round int) error {
 	// Invoke election if we are in a strong ref round.
-	if refRound%2 == 1 {
+	if round%2 == 1 {
 		elect, err := NewElectMsg(
 			corer.nodeID,
-			refRound,
+			round,
 			corer.sigService,
 		)
 		if err != nil {
@@ -181,11 +180,12 @@ func (corer *Core) invokeElect(refRound int) error {
 func (corer *Core) handleElect(elect *Elect) error {
 	logger.Debug.Printf("procesing elect round %d node %d \n", elect.Round, elect.Author)
 
-	if err := corer.eletor.add(elect); err != nil {
+	if err := corer.eletor.Add(elect); err != nil {
 		return err
 	}
 
-	ok, leader := corer.eletor.getLeader(elect.Round)
+	// Reveal leader and try to commit.
+	ok, leader := corer.eletor.TryGetLeader(elect.Round)
 	if ok {
 		corer.dagCh <- &commitReq{leader, elect.Round}
 	}
@@ -279,7 +279,7 @@ func (corer *Core) Run() {
 					err = corer.handleLoopBack(block)
 				}
 			}
-			
+
 			if err != nil {
 				logger.Warn.Println(err)
 			}

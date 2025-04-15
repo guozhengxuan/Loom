@@ -1,10 +1,10 @@
-package test
+package core_test
 
 import (
-	"WuKong/config"
-	"WuKong/core"
-	"WuKong/crypto"
-	"WuKong/network"
+	"Wahoo++/config"
+	"Wahoo++/core"
+	"Wahoo++/crypto"
+	"Wahoo++/network"
 	"context"
 	"sync"
 	"testing"

@@ -1,9 +1,9 @@
 package core
 
 import (
-	"WuKong/crypto"
-	"WuKong/logger"
-	"WuKong/store"
+	"Wahoo++/crypto"
+	"Wahoo++/logger"
+	"Wahoo++/store"
 	"time"
 )
 
@@ -15,7 +15,7 @@ const (
 type reqRetrieve struct {
 	typ       int
 	reqID     int
-	missRefs    []crypto.Digest
+	missRefs  []crypto.Digest
 	nodeID    NodeID
 	backBlock crypto.Digest
 }
@@ -24,7 +24,7 @@ type Retriever struct {
 	nodeID          NodeID
 	transmitor      *Transmitor
 	cnt             int
-	pending        map[crypto.Digest]struct{} //dealing request
+	pending         map[crypto.Digest]struct{} //dealing request
 	requests        map[int]*RequestBlockMsg   //Request
 	loopBackBlocks  map[int]crypto.Digest      // loopback deal block
 	loopBackCnts    map[int]int
@@ -48,7 +48,7 @@ func NewRetriever(
 	r := &Retriever{
 		nodeID:          nodeID,
 		cnt:             0,
-		pending:        make(map[crypto.Digest]struct{}),
+		pending:         make(map[crypto.Digest]struct{}),
 		requests:        make(map[int]*RequestBlockMsg),
 		loopBackBlocks:  make(map[int]crypto.Digest),
 		loopBackCnts:    make(map[int]int),
@@ -131,7 +131,7 @@ func (r *Retriever) run() {
 func (r *Retriever) requestBlocks(digest []crypto.Digest, nodeid NodeID, backBlock crypto.Digest) {
 	req := &reqRetrieve{
 		typ:       ReqType,
-		missRefs:    digest,
+		missRefs:  digest,
 		nodeID:    nodeid,
 		backBlock: backBlock,
 	}
