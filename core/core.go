@@ -87,8 +87,8 @@ func getBlock(store *store.Store, digest crypto.Digest) (*Block, error) {
 	return block, nil
 }
 
-func (corer *Core) generatorBlock(height, round, oldFirstRefH int) (*Block, error) {
-	logger.Debug.Printf("procesing generatorBlock height %d round %d \n", height, round)
+func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error) {
+	logger.Debug.Printf("procesing generateBlock height %d round %d \n", height, round)
 
 	// Request refs from dag.
 	respCh := make(chan []Header)
@@ -98,11 +98,12 @@ func (corer *Core) generatorBlock(height, round, oldFirstRefH int) (*Block, erro
 	// If collected n-f refs, enter a new round.
 	firstRefH := oldFirstRefH
 	if len(ref) > 1 {
+		// Invoke leader election in odd rounds.
+		if round%2 == 1 {
+			corer.invokeElect(round)
+		}
+
 		firstRefH = height
-
-		// Elect the leader of last round
-		corer.invokeElect(round)
-
 		round++
 	}
 
@@ -148,32 +149,37 @@ func (corer *Core) handleEcho(echo *Echo) error {
 		ag = NewAggregator(&corer.committee)
 		corer.voteAg[b.Height] = ag
 	}
-
 	ag.Push(echo.Author, echo)
 
-	// This is where the protocol differs from Wahoo, the core will immediately
-	// produce next block without waiting for n-f refs as Wahoo does.
-	if votes := ag.Take(); len(votes) != 0 {
-		corer.generatorBlock(b.Height+1, echo.Header.Round, echo.Header.FirstRefH)
+	// Decoupling of broadcast and conesnsus is obtained by immediately
+	// producing next block without waiting for n-f refs as Wahoo does.
+	if votes := ag.Take(); votes != nil {
+		b, err := corer.generateBlock(b.Height+1, echo.Header.Round, echo.Header.FirstRefH)
+		if err != nil {
+			return err
+		}
+
+		corer.transmitor.Send(corer.nodeID, NONE, b)
+		corer.transmitor.RecvChannel() <- b
 	}
 
 	return nil
 }
 
 func (corer *Core) invokeElect(round int) error {
-	// Invoke election if we are in a strong ref round.
-	if round%2 == 1 {
-		elect, err := NewElectMsg(
-			corer.nodeID,
-			round,
-			corer.sigService,
-		)
-		if err != nil {
-			return err
-		}
-		corer.transmitor.Send(corer.nodeID, NONE, elect)
-		corer.transmitor.RecvChannel() <- elect
+	elect, err := NewElectMsg(
+		corer.nodeID,
+		round,
+		corer.sigService,
+	)
+
+	if err != nil {
+		return err
 	}
+
+	corer.transmitor.Send(corer.nodeID, NONE, elect)
+	corer.transmitor.RecvChannel() <- elect
+
 	return nil
 }
 
@@ -238,7 +244,8 @@ func (corer *Core) handleLoopBack(block *Block) error {
 }
 
 func (corer *Core) start() error {
-	block, err := corer.generatorBlock(0, 0, 0)
+	block, err := corer.generateBlock(0, 0, 0)
+	
 	if err != nil {
 		return err
 	}

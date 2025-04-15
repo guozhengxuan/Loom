@@ -5,7 +5,7 @@ type dag struct {
 	committee *Committee
 
 	cache     [][]*Block     // store blocks of the entire DAG
-	watermark map[NodeID]int          // height of highest committed block
+	watermark map[NodeID]int // height of highest committed block
 	anchor    map[int]NodeID // highest leader block of each round that is safe to commit
 
 	opCh     <-chan Message
@@ -70,7 +70,7 @@ func (d *dag) handleBlockPushReq(block *Block) {
 	oldLen := len(d.cache[b.Author])
 
 	if index < oldLen {
-		// Receiving a lagged block.
+		// Received a lagged block.
 		d.cache[b.Author][index] = block
 	} else {
 		// Add the up-to-date block to cache, offset by watermark.
@@ -79,7 +79,7 @@ func (d *dag) handleBlockPushReq(block *Block) {
 		d.cache[b.Author][index] = block
 	}
 
-	// Response to registered block pull channel.
+	// Response to corresponding block pull channel if registered.
 	if replyCh, ok := d.pending[b]; ok {
 		replyCh <- block
 	}
@@ -97,16 +97,16 @@ func (d *dag) handleRefReq(req *refReq) {
 			continue
 		}
 
-		lastBlockHeader := line[len(line)-1].Header
+		latestB := line[len(line)-1].Header
 
-		lastH := lastBlockHeader.Slot.Height
-		lastRefH := lastBlockHeader.FirstRefH
+		latestH := latestB.Slot.Height
+		latestRefH := latestB.FirstRefH
 
 		// Strong ref round requires two new blocks received from each node,
-		// while weak ref round requires only one new block.
-		if req.round%2 == 1 && lastH-lastRefH >= 2 ||
-			req.round%2 == 0 && lastH-lastRefH >= 1 {
-			ref = append(ref, lastBlockHeader)
+		// while weak ref round requires only one.
+		if req.round%2 == 1 && latestH-latestRefH >= 2 ||
+			req.round%2 == 0 && latestH-latestRefH >= 1 {
+			ref = append(ref, latestB)
 		}
 	}
 
@@ -130,8 +130,8 @@ func (d *dag) handleCommitReq(req *commitReq) {
 
 	line := d.cache[leader]
 
-	// According to wahoo++, it's safe to submit all previous blocks starting from
-	// the one in the second position before the leader's highest block.
+	// It's safe to submit all previous blocks starting from the one 
+	// in the second position before the leader's highest block.
 	if len(line) >= 3 {
 		height := d.watermark[leader] + len(line) - 2
 

@@ -5,7 +5,7 @@ go 1.21.1
 require (
 	github.com/nutsdb/nutsdb v1.0.4
 	github.com/spf13/cobra v1.8.0
-	github.com/stretchr/testify v1.7.1
+	github.com/stretchr/testify v1.10.0
 	go.dedis.ch/kyber/v3 v3.1.0
 )
 

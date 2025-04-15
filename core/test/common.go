@@ -1,27 +1,15 @@
 package core
 
 import (
-	"Wahoo++/config"
 	"Wahoo++/core"
 	"Wahoo++/crypto"
 	"Wahoo++/logger"
 	"Wahoo++/pool"
-	"sync"
 	"testing"
 )
 
-var once sync.Once
-
 func initTestConifg() {
 	logger.SetLevel(logger.TestLevel)
-}
-
-func getCommittee() *core.Committee {
-	var committee core.Committee
-	once.Do(func() {
-		committee, _, _ = config.GenDefaultCommittee(4)
-	})
-	return &committee
 }
 
 func getBatch(batchSize int) pool.Batch {
@@ -49,7 +37,7 @@ func getDigest() crypto.Digest {
 	return crypto.NewHasher().Sum256([]byte("123"))
 }
 
-func getMsg(Typ int, sigService *crypto.SigService) core.NetMessage {
+func GetMsg(Typ int, sigService *crypto.SigService) core.NetMessage {
 	var msg core.NetMessage
 	switch Typ {
 	case core.EchoType:
@@ -66,7 +54,7 @@ func getMsg(Typ int, sigService *crypto.SigService) core.NetMessage {
 	return msg
 }
 
-func displayMsg(msg core.NetMessage, t *testing.T) {
+func DisplayMsg(msg core.NetMessage, t *testing.T) {
 	switch msg.MsgType() {
 
 	case core.EchoType:

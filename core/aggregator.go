@@ -27,9 +27,15 @@ func (ag *Aggregator) Push(author NodeID, msg NetMessage) {
 }
 
 func (ag *Aggregator) Take() []NetMessage {
-	if len(ag.Item) == ag.Committee.HightThreshold() {
+	thld := ag.Committee.HightThreshold()
+
+	if len(ag.Item) >= thld {
+		// Only take once.
+		ag.Item = ag.Item[thld:]
+
 		return ag.Item
 	}
+	
 	return nil
 }
 
