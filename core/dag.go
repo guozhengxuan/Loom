@@ -1,5 +1,9 @@
 package core
 
+import (
+	"Wahoo++/logger"
+)
+
 type dag struct {
 	nodeID    NodeID
 	committee *Committee
@@ -67,6 +71,10 @@ func (d *dag) handleCheckReq(req *checkReq) {
 func (d *dag) handleBlockPushReq(block *Block) {
 	b := block.Header.Slot
 
+	logger.Debug.Printf("DAG handling push request of block from %d at height %d\n",
+		b.Author,
+		b.Height)
+
 	index := b.Height - d.cacheMark[b.Author] - 1
 
 	if index < 0 {
@@ -93,6 +101,8 @@ func (d *dag) handleBlockPushReq(block *Block) {
 
 // Collect references for new block.
 func (d *dag) handleRefReq(req *refReq) {
+	logger.Debug.Printf("DAG handling ref request of round %d\n", req.round)
+
 	ref := make([]Header, 0, d.committee.HightThreshold())
 
 	// Check if there are n-f new qualified blocks.
@@ -128,6 +138,10 @@ func (d *dag) handleRefReq(req *refReq) {
 }
 
 func (d *dag) handleCommitReq(req *commitReq) {
+	logger.Debug.Printf("DAG handling commit request of round %d\n, leader ID: %d",
+		req.round,
+		req.leader)
+
 	leader := req.leader
 	round := req.round
 
@@ -152,6 +166,10 @@ func (d *dag) handleCommitReq(req *commitReq) {
 }
 
 func (d *dag) handleBlockPullReq(req *blockPullReq) {
+	logger.Debug.Printf("DAG handling pull request of block from %d at height %d\n",
+		req.slot.Author,
+		req.slot.Height)
+
 	b := req.slot
 	replyCh := req.blockPullCh
 
@@ -172,6 +190,8 @@ func (d *dag) handleBlockPullReq(req *blockPullReq) {
 }
 
 func (d *dag) handleLeaderReq(req *leaderReq) {
+	logger.Debug.Printf("DAG handling pull request of leader in round %d\n", req.round)
+
 	replyCh := req.leaderPullCh
 
 	// Reply NONE to outdated requests.
@@ -189,6 +209,7 @@ func (d *dag) handleLeaderReq(req *leaderReq) {
 }
 
 func (d *dag) handleCleanReq(req *gcReq) {
+	logger.Debug.Printf("DAG handling clean request of freshly committed round %d\n", req.round)
 
 	// Remove committed blocks and update watermark.
 	for id := range d.cacheMark {

@@ -59,7 +59,13 @@ func NewCore(
 		voteAg:          make(map[int]*Aggregator),
 	}
 
-	corer.retriever = NewRetriever(nodeID, store, transmitor, sigService, parameters, loopBackChannel)
+	corer.retriever = NewRetriever(nodeID,
+		store,
+		transmitor,
+		sigService,
+		parameters,
+		loopBackChannel)
+
 	corer.eletor = NewElector(sigService, &committee)
 
 	return corer
@@ -101,7 +107,7 @@ func (corer *Core) propose(height, round, oldFirstRefH int) error {
 }
 
 func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error) {
-	logger.Debug.Printf("procesing generateBlock height %d round %d \n", height, round)
+	logger.Debug.Printf("procesing generateBlock height %d round %d\n", height, round)
 
 	// Request refs from dag.
 	respCh := make(chan []Header)
@@ -111,7 +117,7 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 	// If collected n-f refs, enter a new round.
 	firstRefH := oldFirstRefH
 	if len(ref) > 1 {
-		
+
 		firstRefH = height
 		round++
 
@@ -121,7 +127,14 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 		}
 	}
 
-	block, err := NewBlock(corer.nodeID, height, round, firstRefH, corer.txpool.GetBatch(), ref, corer.sigService)
+	block, err := NewBlock(corer.nodeID,
+		height,
+		round,
+		firstRefH,
+		corer.txpool.GetBatch(),
+		ref,
+		corer.sigService)
+
 	return block, err
 }
 
