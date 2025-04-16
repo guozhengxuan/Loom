@@ -19,6 +19,7 @@ type Core struct {
 	retriever       *Retriever
 	eletor          *Elector
 	dagCh           chan Message
+	gcCh            chan int
 	loopBackChannel chan *Block
 	commitChannel   chan<- *Block
 	proposedNotify  map[int]*sync.Mutex
@@ -38,10 +39,11 @@ func NewCore(
 
 	loopBackChannel := make(chan *Block, 1_000)
 	dagCh := make(chan Message, 10_000)
+	gcCh := make(chan int, 100)
 	submitCh := make(chan Slot)
 
 	// Init and run dag.
-	dag := NewDag(nodeID, &committee, dagCh, submitCh)
+	dag := NewDag(nodeID, &committee, dagCh, gcCh, submitCh)
 	go dag.run()
 
 	corer := &Core{
@@ -53,6 +55,7 @@ func NewCore(
 		sigService:      sigService,
 		store:           store,
 		dagCh:           dagCh,
+		gcCh:            gcCh,
 		loopBackChannel: loopBackChannel,
 		commitChannel:   commitChannel,
 		proposedNotify:  make(map[int]*sync.Mutex),
@@ -199,6 +202,12 @@ func (corer *Core) handleElect(elect *Elect) error {
 	return nil
 }
 
+func (corer *Core) handleGcReq(round int) error {
+	// Clean up voteAg.
+
+	// Clean up elector.
+}
+
 func (corer *Core) handleRequestBlock(request *RequestBlockMsg) error {
 	logger.Debug.Println("procesing block request")
 
@@ -245,7 +254,7 @@ func (corer *Core) handleLoopBack(block *Block) error {
 
 func (corer *Core) start() error {
 	block, err := corer.generateBlock(0, 0, 0)
-	
+
 	if err != nil {
 		return err
 	}
@@ -285,6 +294,9 @@ func (corer *Core) Run() {
 				{
 					err = corer.handleLoopBack(block)
 				}
+
+			case round := <-corer.gcCh:
+				err = corer.handleGcReq(round)
 			}
 
 			if err != nil {

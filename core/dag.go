@@ -9,12 +9,13 @@ type dag struct {
 	anchor    map[int]NodeID // highest leader block of each round that is safe to commit
 
 	opCh     <-chan Message
+	coreGcCh chan<- int
 	submitCh chan Slot
 
 	pending map[Slot]chan<- *Block // register one-shot reply channel for commit requests.
 }
 
-func NewDag(nodeID NodeID, committee *Committee, opCh <-chan Message, submitCh chan Slot) *dag {
+func NewDag(nodeID NodeID, committee *Committee, opCh <-chan Message, gcCh chan<- int, submitCh chan Slot) *dag {
 	dag := &dag{
 		nodeID:    nodeID,
 		committee: committee,
@@ -22,6 +23,7 @@ func NewDag(nodeID NodeID, committee *Committee, opCh <-chan Message, submitCh c
 		watermark: make(map[NodeID]int, committee.Size()),
 		anchor:    make(map[int]NodeID, 4),
 		opCh:      opCh,
+		coreGcCh:  gcCh,
 		submitCh:  submitCh,
 	}
 
@@ -130,7 +132,7 @@ func (d *dag) handleCommitReq(req *commitReq) {
 
 	line := d.cache[leader]
 
-	// It's safe to submit all previous blocks starting from the one 
+	// It's safe to submit all previous blocks starting from the one
 	// in the second position before the leader's highest block.
 	if len(line) >= 3 {
 		height := d.watermark[leader] + len(line) - 2
@@ -181,6 +183,9 @@ func (d *dag) handleCleanReq(req *cleanReq) {
 			delete(d.anchor, r)
 		}
 	}
+
+	// Notify core to clean up data of committed rounds.
+	d.coreGcCh <- req.round
 }
 
 func (d *dag) run() {
