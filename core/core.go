@@ -19,7 +19,6 @@ type Core struct {
 	retriever       *Retriever
 	eletor          *Elector
 	dagCh           chan Message
-	gcCh            chan int
 	loopBackChannel chan *Block
 	commitChannel   chan<- *Block
 	proposedNotify  map[int]*sync.Mutex
@@ -39,11 +38,10 @@ func NewCore(
 
 	loopBackChannel := make(chan *Block, 1_000)
 	dagCh := make(chan Message, 10_000)
-	gcCh := make(chan int, 100)
 	submitCh := make(chan Slot)
 
 	// Init and run dag.
-	dag := NewDag(nodeID, &committee, dagCh, gcCh, submitCh)
+	dag := NewDag(nodeID, &committee, dagCh, submitCh)
 	go dag.run()
 
 	corer := &Core{
@@ -55,7 +53,6 @@ func NewCore(
 		sigService:      sigService,
 		store:           store,
 		dagCh:           dagCh,
-		gcCh:            gcCh,
 		loopBackChannel: loopBackChannel,
 		commitChannel:   commitChannel,
 		proposedNotify:  make(map[int]*sync.Mutex),
@@ -90,6 +87,19 @@ func getBlock(store *store.Store, digest crypto.Digest) (*Block, error) {
 	return block, nil
 }
 
+func (corer *Core) propose(height, round, oldFirstRefH int) error {
+	b, err := corer.generateBlock(height, round, oldFirstRefH)
+
+	if err != nil {
+		return err
+	}
+
+	corer.transmitor.Send(corer.nodeID, NONE, b)
+	corer.transmitor.RecvChannel() <- b
+
+	return nil
+}
+
 func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error) {
 	logger.Debug.Printf("procesing generateBlock height %d round %d \n", height, round)
 
@@ -101,13 +111,14 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 	// If collected n-f refs, enter a new round.
 	firstRefH := oldFirstRefH
 	if len(ref) > 1 {
+		
+		firstRefH = height
+		round++
+
 		// Invoke leader election in odd rounds.
 		if round%2 == 1 {
 			corer.invokeElect(round)
 		}
-
-		firstRefH = height
-		round++
 	}
 
 	block, err := NewBlock(corer.nodeID, height, round, firstRefH, corer.txpool.GetBatch(), ref, corer.sigService)
@@ -141,7 +152,7 @@ func (corer *Core) handleEcho(echo *Echo) error {
 	b := echo.Header.Slot
 	logger.Debug.Printf("procesing echo height %d node %d \n", b.Height, echo.Author)
 
-	// Verify signature
+	// Verify signature.
 	if !echo.Verify(corer.committee) {
 		return ErrSignature(echo.MsgType(), b.Height, echo.Author)
 	}
@@ -157,13 +168,7 @@ func (corer *Core) handleEcho(echo *Echo) error {
 	// Decoupling of broadcast and conesnsus is obtained by immediately
 	// producing next block without waiting for n-f refs as Wahoo does.
 	if votes := ag.Take(); votes != nil {
-		b, err := corer.generateBlock(b.Height+1, echo.Header.Round, echo.Header.FirstRefH)
-		if err != nil {
-			return err
-		}
-
-		corer.transmitor.Send(corer.nodeID, NONE, b)
-		corer.transmitor.RecvChannel() <- b
+		corer.propose(b.Height+1, echo.Header.Round, echo.Header.FirstRefH)
 	}
 
 	return nil
@@ -197,15 +202,10 @@ func (corer *Core) handleElect(elect *Elect) error {
 	ok, leader := corer.eletor.TryGetLeader(elect.Round)
 	if ok {
 		corer.dagCh <- &commitReq{leader, elect.Round}
+		corer.eletor.RemoveBy(elect.Round)
 	}
 
 	return nil
-}
-
-func (corer *Core) handleGcReq(round int) error {
-	// Clean up voteAg.
-
-	// Clean up elector.
 }
 
 func (corer *Core) handleRequestBlock(request *RequestBlockMsg) error {
@@ -252,24 +252,11 @@ func (corer *Core) handleLoopBack(block *Block) error {
 	return nil
 }
 
-func (corer *Core) start() error {
-	block, err := corer.generateBlock(0, 0, 0)
-
-	if err != nil {
-		return err
-	}
-
-	corer.transmitor.Send(corer.nodeID, NONE, block)
-	corer.transmitor.RecvChannel() <- block
-
-	return nil
-}
-
 func (corer *Core) Run() {
 	if corer.nodeID >= NodeID(corer.parameters.Faults) {
 
 		// Propose the first block.
-		corer.start()
+		corer.propose(0, 0, 0)
 
 		for {
 			var err error
@@ -294,14 +281,12 @@ func (corer *Core) Run() {
 				{
 					err = corer.handleLoopBack(block)
 				}
-
-			case round := <-corer.gcCh:
-				err = corer.handleGcReq(round)
 			}
 
 			if err != nil {
 				logger.Warn.Println(err)
 			}
+
 		}
 	}
 }

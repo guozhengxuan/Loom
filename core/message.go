@@ -321,12 +321,12 @@ func (r *leaderReq) MsgType() int {
 	return LeaderReqType
 }
 
-type cleanReq struct {
+type gcReq struct {
 	round        int
 	newWatermark map[NodeID]int
 }
 
-func (r *cleanReq) MsgType() int {
+func (r *gcReq) MsgType() int {
 	return CleanReqType
 }
 

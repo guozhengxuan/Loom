@@ -65,11 +65,15 @@ func (e *Elector) Add(elect *Elect) error {
 	}
 
 	msg := a.Take()
+
+	// Exit if the number of elect msgs did't met threshold.
 	if len(msg) == 0 {
 		return nil
 	}
 
 	shares := make([]crypto.SignatureShare, len(msg))
+
+	// Aggregate partial sigs to a complete one.
 	sig, err := crypto.CombineIntactTSPartial(shares, e.sigService.ShareKey, elect.Hash())
 	if err != nil {
 		return err
@@ -93,4 +97,9 @@ func (e *Elector) TryGetLeader(round int) (bool, NodeID) {
 		return true, leader
 	}
 	return false, NONE
+}
+
+func (e *Elector) RemoveBy(round int) {
+	delete(e.leader, round)
+	delete(e.ag, round)
 }

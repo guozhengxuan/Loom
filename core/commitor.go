@@ -50,33 +50,35 @@ func (c *Commitor) commit(slot Slot) {
 			continue
 		}
 
-		// Request last round leader.
+		// Request leader of round r-2.
 		lastR := cur.Header.Round - 1
-		lastLeader := c.pullLeader(lastR)
+		lastLeader := c.pullLeader(lastR - 1)
 
-		// Find the safe commit point of last round.
-		var maxH int
-		for _, ref := range cur.Ref {
+		if lastLeader != NONE {
+			// Find the safe commit point.
+			var maxH int
+			for _, ref := range cur.Ref {
 
-			firstSlot := Slot{ref.Slot.Author, ref.FirstRefH}
-			first := c.pullBlock(firstSlot)
+				firstSlot := Slot{ref.Slot.Author, ref.FirstRefH}
+				first := c.pullBlock(firstSlot)
 
-			for _, ref2 := range first.Ref {
+				for _, ref2 := range first.Ref {
 
-				if ref2.Slot.Author == lastLeader &&
-					ref2.Round == lastR-1 &&
-					ref2.Slot.Height > maxH {
+					if ref2.Slot.Author == lastLeader &&
+						ref2.Round == lastR-1 &&
+						ref2.Slot.Height > maxH {
 
-					maxH = ref2.Slot.Height
+						maxH = ref2.Slot.Height
 
-					break
+						break
+					}
 				}
 			}
-		}
 
-		// Recursively commit highest block of last round's leader that could
-		// have been committed by other nodes, so as to guarantee total order.
-		c.commit(Slot{lastLeader, maxH - 1})
+			// Recursively commit highest block of last round's leader that could
+			// have been committed by other nodes, so as to guarantee total order.
+			c.commit(Slot{lastLeader, maxH - 1})
+		}
 
 		sortedRef := cur.Ref
 		sort.Slice(sortedRef, func(i, j int) bool {
@@ -107,7 +109,7 @@ func (c *Commitor) commit(slot Slot) {
 	}
 
 	// Help dag clean up committed blocks.
-	req := cleanReq{cur.Header.Round, wm}
+	req := gcReq{cur.Header.Round, wm}
 	c.reqCh <- &req
 }
 
