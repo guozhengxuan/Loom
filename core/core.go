@@ -38,10 +38,9 @@ func NewCore(
 
 	loopBackChannel := make(chan *Block, 1_000)
 	dagCh := make(chan Message, 10_000)
-	submitCh := make(chan Slot)
 
 	// Init and run dag.
-	dag := NewDag(nodeID, &committee, dagCh, submitCh)
+	dag := NewDag(nodeID, &committee, dagCh)
 	go dag.run()
 
 	corer := &Core{
@@ -107,7 +106,7 @@ func (corer *Core) propose(height, round, oldFirstRefH int) error {
 }
 
 func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error) {
-	logger.Debug.Printf("procesing generateBlock height %d round %d\n", height, round)
+	logger.Debug.Printf("processing generateBlock height %d round %d\n", height, round)
 
 	// Request refs from dag.
 	respCh := make(chan []Header)
@@ -121,9 +120,9 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 		firstRefH = height
 		round++
 
-		// Invoke leader election in odd rounds.
+		// Invoke 2 * i th round leader election in 2 * i + 1 th rounds.
 		if round%2 == 1 {
-			corer.invokeElect(round)
+			corer.invokeElect(round - 1)
 		}
 	}
 
@@ -134,6 +133,14 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 		corer.txpool.GetBatch(),
 		ref,
 		corer.sigService)
+
+	//BenchMark Log.
+	if block.Batch.Txs != nil {
+		logger.Info.Printf("create Block height %d node %d batch_id %d \n",
+			height,
+			corer.nodeID,
+			block.Batch.ID)
+	}
 
 	return block, err
 }
@@ -211,9 +218,10 @@ func (corer *Core) handleElect(elect *Elect) error {
 		return err
 	}
 
-	// Reveal leader and try to commit.
-	ok, leader := corer.eletor.TryGetLeader(elect.Round)
-	if ok {
+	// Reveal the leader and try to commit.
+	if ok, leader := corer.eletor.TryGetLeader(elect.Round); ok {
+		logger.Debug.Printf("revealed leader of round %d as %d\n", elect.Round, leader)
+
 		corer.dagCh <- &commitReq{leader, elect.Round}
 		corer.eletor.RemoveBy(elect.Round)
 	}

@@ -353,6 +353,7 @@ const (
 )
 
 var DefaultNetMsgTypes = map[int]reflect.Type{
+	ProposeType:      reflect.TypeOf(Block{}),
 	EchoType:         reflect.TypeOf(Echo{}),
 	ElectType:        reflect.TypeOf(Elect{}),
 	RequestBlockType: reflect.TypeOf(RequestBlockMsg{}),

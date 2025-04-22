@@ -31,9 +31,10 @@ func (ag *Aggregator) Take() []NetMessage {
 
 	if len(ag.Item) >= thld {
 		// Only take once.
+		res := ag.Item
 		ag.Item = ag.Item[thld:]
 
-		return ag.Item
+		return res
 	}
 	
 	return nil
@@ -63,6 +64,7 @@ func (e *Elector) Add(elect *Elect) error {
 		a = NewAggregator(e.committee)
 		e.ag[round] = a
 	}
+	a.Push(elect.Author, elect)
 
 	msg := a.Take()
 
@@ -72,13 +74,15 @@ func (e *Elector) Add(elect *Elect) error {
 	}
 
 	shares := make([]crypto.SignatureShare, len(msg))
+	for i, e := range msg {
+		shares[i] = e.(*Elect).SigShare
+	}
 
 	// Aggregate partial sigs to a complete one.
 	sig, err := crypto.CombineIntactTSPartial(shares, e.sigService.ShareKey, elect.Hash())
 	if err != nil {
 		return err
 	}
-
 	e.leader[round] = e.Reveal(sig)
 
 	return nil

@@ -13,7 +13,7 @@ type dag struct {
 	anchor     map[int]NodeID // leaders of each round.
 	anchorMark int            // highest committed round.
 
-	opCh     <-chan Message
+	opCh     chan Message
 	submitCh chan Slot
 
 	// register one-shot reply channel for pending replies.
@@ -21,7 +21,7 @@ type dag struct {
 	unrevealed map[int]chan<- NodeID
 }
 
-func NewDag(nodeID NodeID, committee *Committee, opCh <-chan Message, submitCh chan Slot) *dag {
+func NewDag(nodeID NodeID, committee *Committee, opCh chan Message) *dag {
 	dag := &dag{
 		nodeID:     nodeID,
 		committee:  committee,
@@ -30,7 +30,7 @@ func NewDag(nodeID NodeID, committee *Committee, opCh <-chan Message, submitCh c
 		anchor:     make(map[int]NodeID, 10),
 		anchorMark: 0,
 		opCh:       opCh,
-		submitCh:   submitCh,
+		submitCh:   make(chan Slot),
 		pending:    make(map[Slot]chan<- *Block),
 		unrevealed: make(map[int]chan<- NodeID),
 	}
@@ -120,8 +120,8 @@ func (d *dag) handleRefReq(req *refReq) {
 
 		// Strong ref round requires two new blocks received from each node,
 		// while weak ref round requires only one.
-		if req.round%2 == 1 && latestH-latestRefH >= 2 ||
-			req.round%2 == 0 && latestH-latestRefH >= 1 {
+		if req.round%2 == 0 && latestH-latestRefH >= 2 ||
+			req.round%2 == 1 && latestH-latestRefH >= 1 {
 			ref = append(ref, latestB)
 		}
 	}
@@ -129,9 +129,10 @@ func (d *dag) handleRefReq(req *refReq) {
 	// Otherwise the ref is Plain and only points to the parent block.
 	if len(ref) < d.committee.HightThreshold() {
 		size := len(d.cache[d.nodeID])
-		lastBlockHeader := d.cache[d.nodeID][size-1].Header
-
-		ref = []Header{lastBlockHeader}
+		if size > 0 {
+			lastBlockHeader := d.cache[d.nodeID][size-1].Header
+			ref = []Header{lastBlockHeader}
+		}
 	}
 
 	req.refRespCh <- ref
@@ -237,10 +238,8 @@ func (d *dag) handleCleanReq(req *gcReq) {
 }
 
 func (d *dag) run() {
-	commitReqCh := make(chan Message)
-	commitor := Commitor{d.submitCh, commitReqCh}
-
 	// Init commitor
+	commitor := Commitor{d.submitCh, d.opCh}
 	go commitor.run()
 
 	// Handle requests from core and commitor.
