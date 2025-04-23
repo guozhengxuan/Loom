@@ -36,7 +36,7 @@ func (ag *Aggregator) Take() []NetMessage {
 
 		return res
 	}
-	
+
 	return nil
 }
 

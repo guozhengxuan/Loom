@@ -28,7 +28,7 @@ func NewDag(nodeID NodeID, committee *Committee, opCh chan Message) *dag {
 		cache:      make([][]*Block, committee.Size()),
 		cacheMark:  make(map[NodeID]int, committee.Size()),
 		anchor:     make(map[int]NodeID, 10),
-		anchorMark: 0,
+		anchorMark: -2,
 		opCh:       opCh,
 		submitCh:   make(chan Slot),
 		pending:    make(map[Slot]chan<- *Block),
@@ -139,7 +139,7 @@ func (d *dag) handleRefReq(req *refReq) {
 }
 
 func (d *dag) handleCommitReq(req *commitReq) {
-	logger.Debug.Printf("DAG handling commit request of round %d\n, leader ID: %d",
+	logger.Debug.Printf("DAG handling commit request of round %d, leader ID: %d\n",
 		req.round,
 		req.leader)
 
@@ -180,9 +180,8 @@ func (d *dag) handleBlockPullReq(req *blockPullReq) {
 		return
 	}
 
-	index := b.Height - d.cacheMark[b.Author] - 1
-
 	// Reply the block if received, otherwise wait for outer core to deliver.
+	index := b.Height - d.cacheMark[b.Author] - 1
 	if index < len(d.cache[b.Author]) && d.cache[b.Author][index] != nil {
 		replyCh <- d.cache[b.Author][index]
 	} else {
@@ -196,7 +195,7 @@ func (d *dag) handleLeaderReq(req *leaderReq) {
 	replyCh := req.leaderPullCh
 
 	// Reply NONE to outdated requests.
-	if req.round <= d.anchorMark {
+	if req.round < d.anchorMark {
 		replyCh <- NONE
 		return
 	}
@@ -213,17 +212,20 @@ func (d *dag) handleCleanReq(req *gcReq) {
 	logger.Debug.Printf("DAG handling clean request of freshly committed round %d\n", req.round)
 
 	// Remove committed blocks and update watermark.
-	for id := range d.cacheMark {
+	for id := range req.newWatermark {
+		next := req.newWatermark[id] - d.cacheMark[id]
 
-		cutIndex := req.newWatermark[id] - d.cacheMark[id] - 1
+		if len(d.cache[id]) > 0 {
+			d.cache[id] = d.cache[id][next:]
+		}
 
-		d.cache[id] = append([]*Block{}, d.cache[id][cutIndex:]...)
 		d.cacheMark[id] = req.newWatermark[id]
 	}
 
 	// Remove committed anchors.
+	d.anchorMark = req.round
 	for r := range d.anchor {
-		if r < req.round {
+		if r < d.anchorMark {
 			delete(d.anchor, r)
 		}
 	}
