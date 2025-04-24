@@ -6,7 +6,7 @@ import (
 )
 
 type Commitor struct {
-	submitCh <-chan Slot
+	submitCh <-chan submitReq
 	reqCh    chan<- Message
 }
 
@@ -17,135 +17,119 @@ func (c *Commitor) pullBlock(slot Slot) *Block {
 	return <-blockCh
 }
 
-func (c *Commitor) pullLeader(round int) NodeID {
-	leaderCh := make(chan NodeID)
+func (c *Commitor) commitAnchor(anchor Slot, pulled map[Slot]*Block) {
+	var ordered []*Block
 
-	c.reqCh <- &leaderReq{round, leaderCh}
-	return <-leaderCh
+	q := []Slot{anchor}
+	for len(q) > 0 {
+		head := q[0]
+		q = q[1:]
+
+		cur, ok := pulled[head]
+		if !ok {
+			continue
+		}
+
+		ordered = append(ordered, cur)
+
+		for _, ref := range cur.Ref {
+			q = append(q, ref.Slot)
+		}
+	}
+
+	sort.Slice(ordered, func(i, j int) bool {
+		s1, s2 := ordered[i].Header.Slot, ordered[j].Header.Slot
+		if s1.Author == s2.Author {
+			return s1.Height < s2.Height
+		}
+
+		// For safety, blocks of current leader are in the tail position.
+		if s1.Author == anchor.Author {
+			return false
+		}
+		if s2.Author == anchor.Author {
+			return true
+		}
+
+		return s1.Author < s2.Author
+	})
+
+	// Exec block and remove it from `pulled`.
+	for _, b := range ordered {
+		c.exec(b)
+		delete(pulled, b.Header.Slot)
+	}
 }
 
-func (c *Commitor) commit(startSlot Slot) {
+func (c *Commitor) commit2(startSlot Slot, leaders map[int]NodeID) {
 	logger.Debug.Printf("committing request for block of height %d node %d\n",
 		startSlot.Height,
 		startSlot.Author)
 
+	// `anchors` stores the highest safe-to-commit block for each uncommitted leader.
+	anchors := make(map[int]Slot, len(leaders))
+
 	pulled := make(map[Slot]*Block)
 
+	// Step 1: Pull all uncommitted blocks from dag.
 	q := []Slot{startSlot}
 	for len(q) > 0 {
 		head := q[0]
 		q = q[1:]
 
-		// Skip pulled blocks.
+		// Skip pulled.
 		if _, ok := pulled[head]; ok {
 			continue
 		}
 
-		// Pull block from dag.
+		// Skip committed.
 		cur := c.pullBlock(head)
 		if cur == nil {
 			continue
 		}
+
 		pulled[head] = cur
 
-		// Handle references.
-		switch len(cur.Ref) {
-		case 0:
-		case 1:
-			q = append(q, cur.Ref[0].Slot)
-
-		// Handle block with n-f refs.
-		default:
-			{
-				// Step 1: To guarantee total order, recursively commit highest block of
-				// last round's leader that could have been committed by other nodes.
-				if curR := cur.Header.Round; curR%2 == 0 {
-
-					if lastLeader := c.pullLeader(curR - 2); lastLeader != NONE {
-
-						// Find the safe commit point.
-						var maxH int
-						for _, ref := range cur.Ref {
-							firstSlot := Slot{ref.Slot.Author, ref.FirstRefH}
-
-							first := c.pullBlock(firstSlot)
-							if first == nil {
-								continue
-							}
-
-							for _, ref2 := range first.Ref {
-								if ref2.Slot.Author == lastLeader &&
-									ref2.Round == curR-2 &&
-									ref2.Slot.Height-ref2.FirstRefH >= 2 &&
-									ref2.Slot.Height > maxH {
-
-									maxH = ref2.Slot.Height
-
-									break
-								}
-							}
-						}
-
-						if maxH > 0 {
-							c.commit(Slot{lastLeader, maxH - 1})
-						}
-					}
-				}
-
-				for _, ref := range cur.Ref {
-					q = append(q, ref.Slot)
+		// Update anchor.
+		b := cur.Header
+		if leader, ok := leaders[b.Round]; ok {
+			if b.Slot.Author == leader && b.Slot.Height-b.FirstRefH >= 1 {
+				if old, ok := anchors[b.Round]; !ok || old.Height < b.Slot.Height {
+					anchors[b.Round] = cur.Header.Slot
 				}
 			}
 		}
+
+		for _, ref := range cur.Ref {
+			q = append(q, ref.Slot)
+		}
 	}
 
-	// Ignore committed blocks.
 	if len(pulled) == 0 {
 		return
 	}
 
-	// Step 2: Order all blocks blong to current commit.
-	ordered := make([]Slot, 0, len(pulled))
-	for s := range pulled {
-		ordered = append(ordered, s)
-	}
-	sort.Slice(ordered, func(i, j int) bool {
-		if ordered[i].Author == ordered[j].Author {
-			return ordered[i].Height < ordered[j].Height
-		}
-
-		// For safety, blocks of current leader are in the tail position.
-		if ordered[i].Author == startSlot.Author {
-			return false
-		}
-		if ordered[j].Author == startSlot.Author {
-			return true
-		}
-
-		return ordered[i].Author < ordered[j].Author
-	})
-
-	// Execute blocks and update watermark.
-	var roundMark int
+	// Write new watermark.
 	wm := make(map[NodeID]int)
-	for _, s := range ordered {
-		c.exec(pulled[s])
-
-		// Update round mark.
-		r := pulled[s].Header.Round
-		if r > roundMark {
-			roundMark = r
-		}
-
-		// Update watermark.
-		b := pulled[s].Header.Slot
+	for b := range pulled {
 		if h, ok := wm[b.Author]; !ok || b.Height > h {
 			wm[b.Author] = b.Height
 		}
 	}
 
-	// Help dag clean up committed blocks.
-	req := gcReq{roundMark, wm}
+	// Step 2: Commit anchors in sequence to guarantee total order.
+	rounds := make([]int, 0, len(anchors))
+	for r := range anchors {
+		rounds = append(rounds, r)
+	}
+	sort.Ints(rounds)
+
+	for _, r := range rounds {
+		c.commitAnchor(anchors[r], pulled)
+	}
+
+	// Step 3: Send cleanup request back to dag.
+	req := gcReq{wm}
 	c.reqCh <- &req
 }
 
@@ -168,7 +152,8 @@ func (c *Commitor) exec(block *Block) {
 }
 
 func (c *Commitor) run() {
-	for slot := range c.submitCh {
-		c.commit(slot)
+	for req := range c.submitCh {
+		// c.commit(req.slot, req.round)
+		c.commit2(req.slot, req.leader)
 	}
 }

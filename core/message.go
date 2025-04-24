@@ -303,6 +303,11 @@ func (r *commitReq) MsgType() int {
 	return CommitReqType
 }
 
+type submitReq struct {
+	slot   Slot
+	leader map[int]NodeID
+}
+
 type blockPullReq struct {
 	slot        Slot
 	blockPullCh chan<- *Block
@@ -312,17 +317,7 @@ func (r *blockPullReq) MsgType() int {
 	return BlockReqType
 }
 
-type leaderReq struct {
-	round        int
-	leaderPullCh chan<- NodeID
-}
-
-func (r *leaderReq) MsgType() int {
-	return LeaderReqType
-}
-
 type gcReq struct {
-	round        int
 	newWatermark map[NodeID]int
 }
 

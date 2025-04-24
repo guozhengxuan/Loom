@@ -8,31 +8,30 @@ type dag struct {
 	nodeID    NodeID
 	committee *Committee
 
-	cache      [][]*Block     // store blocks of the entire DAG
-	cacheMark  map[NodeID]int // height of highest committed block
-	anchor     map[int]NodeID // leaders of each round.
-	anchorMark int            // highest committed round.
+	cache     [][]*Block     // store blocks of the entire DAG
+	cacheMark map[NodeID]int // height of highest committed block
+
+	leader    map[int]NodeID // uncommitted leaders of each round.
+	roundMark int            // highest committed round.
 
 	opCh     chan Message
-	submitCh chan Slot
+	submitCh chan submitReq
 
-	// register one-shot reply channel for pending replies.
-	pending    map[Slot]chan<- *Block
-	unrevealed map[int]chan<- NodeID
+	pending       map[Slot]chan<- *Block // register one-shot reply channel for pending replies.
+	pendingCommit *commitReq
 }
 
 func NewDag(nodeID NodeID, committee *Committee, opCh chan Message) *dag {
 	dag := &dag{
-		nodeID:     nodeID,
-		committee:  committee,
-		cache:      make([][]*Block, committee.Size()),
-		cacheMark:  make(map[NodeID]int, committee.Size()),
-		anchor:     make(map[int]NodeID, 10),
-		anchorMark: -2,
-		opCh:       opCh,
-		submitCh:   make(chan Slot),
-		pending:    make(map[Slot]chan<- *Block),
-		unrevealed: make(map[int]chan<- NodeID),
+		nodeID:    nodeID,
+		committee: committee,
+		cache:     make([][]*Block, committee.Size()),
+		cacheMark: make(map[NodeID]int, committee.Size()),
+		leader:    make(map[int]NodeID, 10),
+		roundMark: -2,
+		opCh:      opCh,
+		submitCh:  make(chan submitReq),
+		pending:   make(map[Slot]chan<- *Block),
 	}
 
 	for i := 0; i < committee.Size(); i++ {
@@ -109,7 +108,7 @@ func (d *dag) handleRefReq(req *refReq) {
 	for _, line := range d.cache {
 
 		// Ignore nodes from which no blocks of current round are received.
-		if len(line) == 0 || line[len(line)-1].Header.Round < req.round-1 {
+		if len(line) == 0 || line[len(line)-1].Header.Round < req.round {
 			continue
 		}
 
@@ -120,7 +119,8 @@ func (d *dag) handleRefReq(req *refReq) {
 
 		// Strong ref round requires two new blocks received from each node,
 		// while weak ref round requires only one.
-		if req.round%2 == 0 && latestH-latestRefH >= 2 ||
+		if line[len(line)-1].Header.Round > req.round ||
+			req.round%2 == 0 && latestH-latestRefH >= 2 ||
 			req.round%2 == 1 && latestH-latestRefH >= 1 {
 			ref = append(ref, latestB)
 		}
@@ -138,31 +138,49 @@ func (d *dag) handleRefReq(req *refReq) {
 	req.refRespCh <- ref
 }
 
+func (d *dag) isAnchorReady(curR int) bool {
+	for r := d.roundMark + 1; r <= curR; r++ {
+		if _, ok := d.leader[r]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (d *dag) handleCommitReq(req *commitReq) {
 	logger.Debug.Printf("DAG handling commit request of round %d, leader ID: %d\n",
 		req.round,
 		req.leader)
 
-	leader := req.leader
-	round := req.round
-
 	// Store leaders of each round.
-	d.anchor[round] = leader
+	d.leader[req.round] = req.leader
 
-	// Reply to commitor waiting for unrevealed leaders.
-	if replyCh, ok := d.unrevealed[round]; ok {
-		replyCh <- leader
+	highR := req.round
+	if d.pendingCommit != nil && d.pendingCommit.round > highR {
+		highR = req.round
 	}
 
-	line := d.cache[leader]
+	// Delay commit if lack of some previous leaders.
+	if !d.isAnchorReady(highR) {
+		if d.pendingCommit == nil || d.pendingCommit.round < req.round {
+			d.pendingCommit = req
+		}
+		return
+	}
 
 	// It's safe to submit all previous blocks starting from the one
 	// in the second position before the leader's highest block.
-	if len(line) >= 3 {
-		height := d.cacheMark[leader] + len(line) - 2
+	line := d.cache[req.leader]
+	for i := len(line) - 1; i >= 0; i-- {
+		if line[i] == nil {
+			continue
+		}
 
-		b := Slot{leader, height}
-		d.submitCh <- b
+		b := line[i].Header
+		if b.Round == req.round && b.Slot.Height-b.FirstRefH >= 2 {
+			d.submitCh <- submitReq{Slot{req.leader, b.Slot.Height - 2}, d.leader}
+			return
+		}
 	}
 }
 
@@ -189,27 +207,9 @@ func (d *dag) handleBlockPullReq(req *blockPullReq) {
 	}
 }
 
-func (d *dag) handleLeaderReq(req *leaderReq) {
-	logger.Debug.Printf("DAG handling pull request of leader in round %d\n", req.round)
-
-	replyCh := req.leaderPullCh
-
-	// Reply NONE to outdated requests.
-	if req.round < d.anchorMark {
-		replyCh <- NONE
-		return
-	}
-
-	// Reply directly or register for pending.
-	if leader, ok := d.anchor[req.round]; ok {
-		replyCh <- leader
-	} else {
-		d.unrevealed[req.round] = replyCh
-	}
-}
-
 func (d *dag) handleCleanReq(req *gcReq) {
-	logger.Debug.Printf("DAG handling clean request of freshly committed round %d\n", req.round)
+	logger.Debug.Printf("DAG handling clean request of freshly committed round %d\n",
+		d.pendingCommit.round)
 
 	// Remove committed blocks and update watermark.
 	for id := range req.newWatermark {
@@ -223,10 +223,10 @@ func (d *dag) handleCleanReq(req *gcReq) {
 	}
 
 	// Remove committed anchors.
-	d.anchorMark = req.round
-	for r := range d.anchor {
-		if r < d.anchorMark {
-			delete(d.anchor, r)
+	d.roundMark = d.pendingCommit.round
+	for r := range d.leader {
+		if r < d.roundMark {
+			delete(d.leader, r)
 		}
 	}
 
@@ -234,9 +234,7 @@ func (d *dag) handleCleanReq(req *gcReq) {
 	for s := range d.pending {
 		delete(d.pending, s)
 	}
-	for r := range d.unrevealed {
-		delete(d.unrevealed, r)
-	}
+	d.pendingCommit = nil
 }
 
 func (d *dag) run() {
@@ -255,8 +253,6 @@ func (d *dag) run() {
 			d.handleCommitReq(msg.(*commitReq))
 		case BlockReqType:
 			d.handleBlockPullReq(msg.(*blockPullReq))
-		case LeaderReqType:
-			d.handleLeaderReq(msg.(*leaderReq))
 		case CleanReqType:
 			d.handleCleanReq(msg.(*gcReq))
 		}

@@ -116,7 +116,6 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 	// If collected n-f refs, enter a new round.
 	firstRefH := oldFirstRefH
 	if len(ref) > 1 {
-
 		firstRefH = height
 		round++
 
