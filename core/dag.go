@@ -8,30 +8,28 @@ type dag struct {
 	nodeID    NodeID
 	committee *Committee
 
-	cache     [][]*Block     // store blocks of the entire DAG
-	cacheMark map[NodeID]int // height of highest committed block
+	cache       [][]*Block     // store blocks of the entire DAG
+	cacheMark   map[NodeID]int // height of highest committed block
+	uncommitted map[int]NodeID // uncommitted leaders of each round.
+	commitMark  int            // highest committed round.
 
-	leader    map[int]NodeID // uncommitted leaders of each round.
-	roundMark int            // highest committed round.
-
-	opCh     chan Message
-	submitCh chan submitReq
-
+	opCh          chan Message           // read & write operations received from corer and commitor.
+	submitCh      chan submitReq         // forward commit request from corer to commitor.
 	pending       map[Slot]chan<- *Block // register one-shot reply channel for pending replies.
-	pendingCommit *commitReq
+	pendingCommit *commitReq             // commit requests in processing.
 }
 
 func NewDag(nodeID NodeID, committee *Committee, opCh chan Message) *dag {
 	dag := &dag{
-		nodeID:    nodeID,
-		committee: committee,
-		cache:     make([][]*Block, committee.Size()),
-		cacheMark: make(map[NodeID]int, committee.Size()),
-		leader:    make(map[int]NodeID, 10),
-		roundMark: -2,
-		opCh:      opCh,
-		submitCh:  make(chan submitReq),
-		pending:   make(map[Slot]chan<- *Block),
+		nodeID:      nodeID,
+		committee:   committee,
+		cache:       make([][]*Block, committee.Size()),
+		cacheMark:   make(map[NodeID]int, committee.Size()),
+		uncommitted: make(map[int]NodeID, 100),
+		commitMark:  -2,
+		opCh:        opCh,
+		submitCh:    make(chan submitReq, 100),
+		pending:     make(map[Slot]chan<- *Block),
 	}
 
 	for i := 0; i < committee.Size(); i++ {
@@ -139,8 +137,8 @@ func (d *dag) handleRefReq(req *refReq) {
 }
 
 func (d *dag) isAnchorReady(curR int) bool {
-	for r := d.roundMark + 1; r <= curR; r++ {
-		if _, ok := d.leader[r]; !ok {
+	for r := d.commitMark + 2; r <= curR; r+=2 {
+		if _, ok := d.uncommitted[r]; !ok {
 			return false
 		}
 	}
@@ -152,36 +150,34 @@ func (d *dag) handleCommitReq(req *commitReq) {
 		req.round,
 		req.leader)
 
-	// Store leaders of each round.
-	d.leader[req.round] = req.leader
+	d.uncommitted[req.round] = req.leader
 
-	highR := req.round
-	if d.pendingCommit != nil && d.pendingCommit.round > highR {
-		highR = req.round
+	if d.pendingCommit == nil || d.pendingCommit.round < req.round {
+		d.pendingCommit = req
 	}
 
 	// Delay commit if lack of some previous leaders.
-	if !d.isAnchorReady(highR) {
-		if d.pendingCommit == nil || d.pendingCommit.round < req.round {
-			d.pendingCommit = req
-		}
+	if !d.isAnchorReady(d.pendingCommit.round) {
 		return
 	}
 
 	// It's safe to submit all previous blocks starting from the one
 	// in the second position before the leader's highest block.
-	line := d.cache[req.leader]
+	line := d.cache[d.pendingCommit.leader]
 	for i := len(line) - 1; i >= 0; i-- {
 		if line[i] == nil {
 			continue
 		}
 
 		b := line[i].Header
-		if b.Round == req.round && b.Slot.Height-b.FirstRefH >= 2 {
-			d.submitCh <- submitReq{Slot{req.leader, b.Slot.Height - 2}, d.leader}
+		if b.Round == d.pendingCommit.round && b.Slot.Height-b.FirstRefH >= 2 {
+			s := Slot{d.pendingCommit.leader, b.Slot.Height - 2}
+			d.submitCh <- submitReq{s, d.pendingCommit.round, d.uncommitted}
 			return
 		}
 	}
+
+	d.pendingCommit = nil
 }
 
 func (d *dag) handleBlockPullReq(req *blockPullReq) {
@@ -223,10 +219,10 @@ func (d *dag) handleCleanReq(req *gcReq) {
 	}
 
 	// Remove committed anchors.
-	d.roundMark = d.pendingCommit.round
-	for r := range d.leader {
-		if r < d.roundMark {
-			delete(d.leader, r)
+	d.commitMark = d.pendingCommit.round
+	for r := range d.uncommitted {
+		if r <= d.commitMark {
+			delete(d.uncommitted, r)
 		}
 	}
 
@@ -234,7 +230,6 @@ func (d *dag) handleCleanReq(req *gcReq) {
 	for s := range d.pending {
 		delete(d.pending, s)
 	}
-	d.pendingCommit = nil
 }
 
 func (d *dag) run() {

@@ -18,7 +18,8 @@ func (c *Commitor) pullBlock(slot Slot) *Block {
 }
 
 func (c *Commitor) commitAnchor(anchor Slot, pulled map[Slot]*Block) {
-	var ordered []*Block
+	visited := make(map[Slot]bool)
+	var ordered []Slot
 
 	q := []Slot{anchor}
 	for len(q) > 0 {
@@ -26,11 +27,12 @@ func (c *Commitor) commitAnchor(anchor Slot, pulled map[Slot]*Block) {
 		q = q[1:]
 
 		cur, ok := pulled[head]
-		if !ok {
+		if !ok || visited[head] {
 			continue
 		}
 
-		ordered = append(ordered, cur)
+		visited[head] = true
+		ordered = append(ordered, head)
 
 		for _, ref := range cur.Ref {
 			q = append(q, ref.Slot)
@@ -38,7 +40,7 @@ func (c *Commitor) commitAnchor(anchor Slot, pulled map[Slot]*Block) {
 	}
 
 	sort.Slice(ordered, func(i, j int) bool {
-		s1, s2 := ordered[i].Header.Slot, ordered[j].Header.Slot
+		s1, s2 := ordered[i], ordered[j]
 		if s1.Author == s2.Author {
 			return s1.Height < s2.Height
 		}
@@ -55,24 +57,25 @@ func (c *Commitor) commitAnchor(anchor Slot, pulled map[Slot]*Block) {
 	})
 
 	// Exec block and remove it from `pulled`.
-	for _, b := range ordered {
-		c.exec(b)
-		delete(pulled, b.Header.Slot)
+	for _, s := range ordered {
+		c.exec(pulled[s])
+		delete(pulled, s)
 	}
 }
 
-func (c *Commitor) commit2(startSlot Slot, leaders map[int]NodeID) {
+func (c *Commitor) commit2(req submitReq) {
 	logger.Debug.Printf("committing request for block of height %d node %d\n",
-		startSlot.Height,
-		startSlot.Author)
+		req.slot.Height,
+		req.slot.Author)
 
 	// `anchors` stores the highest safe-to-commit block for each uncommitted leader.
-	anchors := make(map[int]Slot, len(leaders))
+	anchors := make(map[int]Slot, len(req.uncommitted))
+	anchors[req.round] = req.slot
 
 	pulled := make(map[Slot]*Block)
 
 	// Step 1: Pull all uncommitted blocks from dag.
-	q := []Slot{startSlot}
+	q := []Slot{req.slot}
 	for len(q) > 0 {
 		head := q[0]
 		q = q[1:]
@@ -92,7 +95,7 @@ func (c *Commitor) commit2(startSlot Slot, leaders map[int]NodeID) {
 
 		// Update anchor.
 		b := cur.Header
-		if leader, ok := leaders[b.Round]; ok {
+		if leader, ok := req.uncommitted[b.Round]; ok {
 			if b.Slot.Author == leader && b.Slot.Height-b.FirstRefH >= 1 {
 				if old, ok := anchors[b.Round]; !ok || old.Height < b.Slot.Height {
 					anchors[b.Round] = cur.Header.Slot
@@ -129,8 +132,8 @@ func (c *Commitor) commit2(startSlot Slot, leaders map[int]NodeID) {
 	}
 
 	// Step 3: Send cleanup request back to dag.
-	req := gcReq{wm}
-	c.reqCh <- &req
+	gcReq := gcReq{wm}
+	c.reqCh <- &gcReq
 }
 
 func (c *Commitor) exec(block *Block) {
@@ -154,6 +157,6 @@ func (c *Commitor) exec(block *Block) {
 func (c *Commitor) run() {
 	for req := range c.submitCh {
 		// c.commit(req.slot, req.round)
-		c.commit2(req.slot, req.leader)
+		c.commit2(req)
 	}
 }
