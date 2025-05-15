@@ -15,7 +15,7 @@ type dag struct {
 
 	opCh          chan Message           // read & write operations received from corer and commitor.
 	submitCh      chan submitReq         // forward commit request from corer to commitor.
-	pending       map[Slot]chan<- *Block // register one-shot reply channel for pending replies.
+	pending       map[Slot]chan<- *Block // register one-shot reply channel for pending pulls.
 	pendingCommit *commitReq             // commit requests in processing.
 }
 

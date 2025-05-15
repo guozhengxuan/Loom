@@ -18,9 +18,8 @@ from alibaba.settings import Settings, SettingsError
 
 
 class InstanceManager:
-    INSTANCE_NAME = 'WuKong'
-    SECURITY_GROUP_NAME = 'WuKong'
-    VPC_NAME = 'lightDag'
+    INSTANCE_NAME = 'wahooplus'
+    SECURITY_GROUP_NAME = 'wahooplus'
 
     def __init__(self, settings):
         assert isinstance(settings, Settings)
@@ -91,14 +90,14 @@ class InstanceManager:
             if sum(len(x) for x in ids.values()) == 0:
                 break
 
-    def _create_security_group(self, client , region):
+    def _create_security_group(self, client, region):
 
         try:
             temp = {}
             # step 0: 查询vpc
             describe_vpcs_request = vpc_20160428_models.DescribeVpcsRequest(
                 region_id = region,
-                vpc_name='WuKong'
+                vpc_name='wahooplus'
             )
 
             resp = self.vpc_clients[region].describe_vpcs_with_options(describe_vpcs_request, self.aliyun_runtime).to_map()
@@ -117,6 +116,7 @@ class InstanceManager:
             securityID = resp['body']['SecurityGroupId']
             temp['securityID'] = securityID
             self.securities[region] = temp
+
             # step 2: 设置开放端口
             authorize_security_group_request = ecs_20140526_models.AuthorizeSecurityGroupRequest(
                 region_id=region,
@@ -182,7 +182,7 @@ class InstanceManager:
         # Create the security group in every region.
         for region,client in self.ecs_clients.items():
             try:
-                self._create_security_group(client,region)
+                self._create_security_group(client, region)
             except Exception as e:
                 raise BenchError('Failed to create security group', e)
 

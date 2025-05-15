@@ -2,7 +2,8 @@ from datetime import datetime
 from os import error
 from fabric import Connection, ThreadingGroup as Group
 from fabric.exceptions import GroupException
-from paramiko import RSAKey
+# from paramiko import RSAKey
+from paramiko import Ed25519Key
 from paramiko.ssh_exception import PasswordRequiredException, SSHException
 from os.path import basename, splitext
 from time import sleep
@@ -36,7 +37,7 @@ class Bench:
         self.settings = self.manager.settings
         try:
             # ssh 连接
-            ctx.connect_kwargs.pkey = RSAKey.from_private_key_file(
+            ctx.connect_kwargs.pkey = Ed25519Key.from_private_key_file(
                 self.manager.settings.key_path
             )
             self.connect = ctx.connect_kwargs
