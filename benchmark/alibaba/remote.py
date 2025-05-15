@@ -2,7 +2,6 @@ from datetime import datetime
 from os import error
 from fabric import Connection, ThreadingGroup as Group
 from fabric.exceptions import GroupException
-# from paramiko import RSAKey
 from paramiko import Ed25519Key
 from paramiko.ssh_exception import PasswordRequiredException, SSHException
 from os.path import basename, splitext
@@ -114,10 +113,10 @@ class Bench:
             c.put(PathMaker.parameters_file(), '.')
 
     def install(self):
-
+        Print.info("Installing...")
         cmd = [
             'sudo apt-get update',
-            'sudo apt-get -y upgrade',
+            'sudo DEBIAN_FRONTEND=noninteractive apt-get -y upgrade',
             'sudo apt-get -y autoremove',
 
             # The following dependencies prevent the error: [error: linker `cc` not found].
