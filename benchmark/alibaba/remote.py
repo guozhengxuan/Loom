@@ -9,6 +9,8 @@ from time import sleep
 from math import ceil
 from os.path import join
 import subprocess
+import concurrent.futures
+from tqdm import tqdm
 
 from benchmark.config import Committee, Key, TSSKey, NodeParameters, BenchParameters, ConfigError
 from benchmark.utils import BenchError, Print, PathMaker, progress_bar
@@ -231,21 +233,29 @@ class Bench:
 
         # Wait for all transactions to be processed.
         duration = bench_parameters.duration
-        for _ in progress_bar(range(100), prefix=f'Running benchmark ({duration} sec):'):
-            sleep(ceil(duration / 100))
+        for _ in progress_bar(range(100), prefix=f'Running benchmark ({duration} secs):'):
+            sleep(duration / 100)
         self.kill(hosts=hosts, delete_logs=False)
 
     def download(self,node_instance,ts):
         hosts = self.manager.hosts(flat=True)
         # Download log files.
-        progress = progress_bar(hosts, prefix='Downloading logs:')
-        for i, host in enumerate(progress):
+        def download_logs_from_host(host_idx, host):
             c = Connection(host, user='root', connect_kwargs=self.connect)
             for j in range(node_instance):
-                # c.get(PathMaker.node_log_info_file(i*node_instance+j,ts), local=PathMaker.node_log_info_file(i*node_instance+j,ts))
-                c.get(PathMaker.node_log_debug_file(i*node_instance+j,ts), local=PathMaker.node_log_debug_file(i*node_instance+j,ts))
-                # c.get(PathMaker.node_log_error_file(i*node_instance+j,ts), local=PathMaker.node_log_error_file(i*node_instance+j,ts))
-                # c.get(PathMaker.node_log_warn_file(i*node_instance+j,ts), local=PathMaker.node_log_warn_file(i*node_instance+j,ts))
+                node_idx = host_idx * node_instance + j
+                # c.get(PathMaker.node_log_info_file(node_idx, ts), local=PathMaker.node_log_info_file(node_idx, ts))
+                c.get(PathMaker.node_log_debug_file(node_idx, ts), local=PathMaker.node_log_debug_file(node_idx, ts))
+                # c.get(PathMaker.node_log_error_file(node_idx, ts), local=PathMaker.node_log_error_file(node_idx, ts))
+                # c.get(PathMaker.node_log_warn_file(node_idx, ts), local=PathMaker.node_log_warn_file(node_idx, ts))
+            return host_idx
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(hosts))) as executor:
+            futures = {executor.submit(download_logs_from_host, i, host): host for i, host in enumerate(hosts)}
+            
+            with tqdm(total=len(hosts), desc="Downloading logs") as pbar:
+                for future in concurrent.futures.as_completed(futures):
+                    pbar.update(1)
 
         # Parse logs and return the parser.
         Print.info('Parsing logs and computing performance...')

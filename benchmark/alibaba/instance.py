@@ -37,6 +37,8 @@ class InstanceManager:
             config.access_key_id = self.access_key_id
             config.access_key_secret = self.access_key_secret
             config.region_id = region
+            config.read_timeout=20_000
+            config.connect_timeout=20_000 
             self.ecs_clients[region] = Ecs20140526Client(config)
             self.vpc_clients[region] = Vpc20160428Client(config)
         self.aliyun_runtime = util_models.RuntimeOptions()
@@ -91,7 +93,6 @@ class InstanceManager:
                 break
 
     def _create_security_group(self, client, region):
-
         try:
             temp = {}
             # step 0: 查询vpc
@@ -99,7 +100,7 @@ class InstanceManager:
                 region_id = region,
                 vpc_name='wahooplus'
             )
-
+            
             resp = self.vpc_clients[region].describe_vpcs_with_options(describe_vpcs_request, self.aliyun_runtime).to_map()
             temp["VSwitchId"] = resp['body']['Vpcs']['Vpc'][0]['VSwitchIds']['VSwitchId'][0]
             temp['VpcId'] = resp['body']['Vpcs']['Vpc'][0]['VpcId']

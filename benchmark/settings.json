@@ -1,8 +1,8 @@
 {
     "key": {
         "name": "wahooplus",
-        "path": "/Users/zhengxuanguo/.ssh/id_ed25519",
-        "accesskey": "/Users/zhengxuanguo/.aliyun/access.json"
+        "path": "/home/gzx/.ssh/id_ed25519",
+        "accesskey": "/home/gzx/.aliyun/access.json"
     },
     "ports": {
         "consensus": 8000

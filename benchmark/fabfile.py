@@ -42,7 +42,7 @@ def local(ctx):
         Print.error(e)
 
 @task
-def create(ctx, nodes=1):
+def create(ctx, nodes=7):
     ''' Create a testbed'''
     try:
         InstanceManager.make().create_instances(nodes)
@@ -107,9 +107,9 @@ def info(ctx):
 def remote(ctx):
     ''' Run benchmarks on AWS '''
     bench_params = {
-        'nodes': [4],
+        'nodes': [31],
         'node_instance': 1,                                             # the number of running instance for a node  (max = 4)
-        'duration': 30,
+        'duration': 60,
         'rate': 5_000,                                                  # tx send rate
         'batch_size': [100],                              # the max number of tx that can be hold 
         'log_level': 0b1111,                                            # 0x1 infolevel 0x2 debuglevel 0x4 warnlevel 0x8 errorlevel
