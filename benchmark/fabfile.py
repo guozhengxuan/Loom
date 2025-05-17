@@ -109,9 +109,9 @@ def remote(ctx):
     bench_params = {
         'nodes': [31],
         'node_instance': 1,                                             # the number of running instance for a node  (max = 4)
-        'duration': 60,
+        'duration': 40,
         'rate': 5_000,                                                  # tx send rate
-        'batch_size': [100],                              # the max number of tx that can be hold 
+        'batch_size': [1000],                              # the max number of tx that can be hold 
         'log_level': 0b1111,                                            # 0x1 infolevel 0x2 debuglevel 0x4 warnlevel 0x8 errorlevel
         'protocol_name': "Wahoo++",
         'runs': 1

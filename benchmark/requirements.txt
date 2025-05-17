@@ -1,3 +1,4 @@
 fabric==2.6.0
+tqdm==4.67.1
 alibabacloud_ecs20140526==4.1.8
 alibabacloud_vpc20160428==6.6.6

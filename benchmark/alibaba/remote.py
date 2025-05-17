@@ -6,17 +6,25 @@ from paramiko import Ed25519Key
 from paramiko.ssh_exception import PasswordRequiredException, SSHException
 from os.path import basename, splitext
 from time import sleep
-from math import ceil
-from os.path import join
 import subprocess
 import concurrent.futures
 from tqdm import tqdm
+from functools import partial
 
 from benchmark.config import Committee, Key, TSSKey, NodeParameters, BenchParameters, ConfigError
 from benchmark.utils import BenchError, Print, PathMaker, progress_bar
 from benchmark.commands import CommandMaker
 from benchmark.logs import LogParser, ParseError
 from alibaba.instance import InstanceManager
+
+
+def run_concurrent_tasks(task_fn, iterable, desc, max_workers=10):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(iterable))) as executor:
+        futures = {executor.submit(task_fn, *args) if isinstance(args, tuple) 
+                    else executor.submit(task_fn, args): args for args in iterable}
+        with tqdm(total=len(futures), desc=desc) as pbar:
+            for future in concurrent.futures.as_completed(futures):
+                pbar.update(1)
 
 
 class FabricError(Exception):
@@ -109,10 +117,7 @@ class Bench:
 
         node_parameters.print(PathMaker.parameters_file()) #generate new parameters
         # Update configuration files.
-        progress = progress_bar(hosts, prefix='Update parameters files:')
-        for host in progress:
-            c = Connection(host, user='root', connect_kwargs=self.connect)
-            c.put(PathMaker.parameters_file(), '.')
+        run_concurrent_tasks(partial(self.upload_to_host, local_path=PathMaker.parameters_file(), remote_path='.'), hosts, "Uploading parameter files")
 
     def install(self):
         Print.info("Installing...")
@@ -134,16 +139,24 @@ class Bench:
             e = FabricError(e) if isinstance(e, GroupException) else e
             raise BenchError('Failed to install repo on testbed', e)
 
+    def upload_to_host(self, host, local_path, remote_path):
+        c = Connection(host, user='root', connect_kwargs=self.connect)
+        c.put(local_path, remote_path)
+        return host
+
+    def download_from_host(self, host, remote_path, local_path):
+        c = Connection(host, user='root', connect_kwargs=self.connect)
+        c.get(remote_path, local=local_path)
+        return host
+
     def upload_exec(self):
         hosts = self.manager.hosts(flat=True)
         # Recompile the latest code.
         cmd = CommandMaker.compile().split()
         subprocess.run(cmd, check=True)
-        # Upload execute files.
-        progress = progress_bar(hosts, prefix='Uploading main files:')
-        for host in progress:
-            c = Connection(host, user='root', connect_kwargs=self.connect)
-            c.put(PathMaker.execute_file(),'.')
+        # Upload execute files concurrently.
+        run_concurrent_tasks(partial(self.upload_to_host, local_path=PathMaker.execute_file(), remote_path='.'), 
+            hosts, "Uploading main files")
 
     def _config(self, hosts,bench_parameters):
         Print.info('Generating configuration files...')
@@ -187,13 +200,14 @@ class Bench:
         g.run(cmd, hide=True)
 
         # Upload configuration files.
-        progress = progress_bar(hosts, prefix='Uploading config files:')
-        for i, host in enumerate(progress):
-            c = Connection(host, user='root', connect_kwargs=self.connect)
-            c.put(PathMaker.committee_file(), '.')
+        def upload_config_to_host(i, host):
+            self.upload_to_host(host, PathMaker.committee_file(), '.')
             for j in range(node_instance):
-                c.put(PathMaker.key_file(i*node_instance+j), '.')
-                c.put(PathMaker.threshold_key_file(i*node_instance+j), '.')
+                self.upload_to_host(host, PathMaker.key_file(i*node_instance+j), '.')
+                self.upload_to_host(host, PathMaker.threshold_key_file(i*node_instance+j), '.')
+            return host
+        
+        run_concurrent_tasks(upload_config_to_host, list(enumerate(hosts)), "Uploading config files")
 
         return committee
 
@@ -239,40 +253,35 @@ class Bench:
 
     def download(self,node_instance,ts):
         hosts = self.manager.hosts(flat=True)
-        # Download log files.
-        def download_logs_from_host(host_idx, host):
-            c = Connection(host, user='root', connect_kwargs=self.connect)
+
+        # Download log files (debug logs in download method).
+        def download_debug_logs_from_host(host_idx, host):
             for j in range(node_instance):
                 node_idx = host_idx * node_instance + j
-                # c.get(PathMaker.node_log_info_file(node_idx, ts), local=PathMaker.node_log_info_file(node_idx, ts))
-                c.get(PathMaker.node_log_debug_file(node_idx, ts), local=PathMaker.node_log_debug_file(node_idx, ts))
-                # c.get(PathMaker.node_log_error_file(node_idx, ts), local=PathMaker.node_log_error_file(node_idx, ts))
-                # c.get(PathMaker.node_log_warn_file(node_idx, ts), local=PathMaker.node_log_warn_file(node_idx, ts))
+                self.download_from_host(host, 
+                    PathMaker.node_log_debug_file(node_idx, ts), 
+                    PathMaker.node_log_debug_file(node_idx, ts))
             return host_idx
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(hosts))) as executor:
-            futures = {executor.submit(download_logs_from_host, i, host): host for i, host in enumerate(hosts)}
-            
-            with tqdm(total=len(hosts), desc="Downloading logs") as pbar:
-                for future in concurrent.futures.as_completed(futures):
-                    pbar.update(1)
+
+        run_concurrent_tasks(download_debug_logs_from_host, list(enumerate(hosts)), "Downloading logs")
 
         # Parse logs and return the parser.
         Print.info('Parsing logs and computing performance...')
         return LogParser.process(PathMaker.logs_path(ts))
     
     def _logs(self, hosts, faults, protocol, ddos,bench_parameters,ts):
-        
         node_instance = bench_parameters.node_instance
-        # Download log files.
-        progress = progress_bar(hosts, prefix='Downloading logs:')
-        for i, host in enumerate(progress):
-            c = Connection(host, user='root', connect_kwargs=self.connect)
+        
+        # Download log files (info logs in _logs method).
+        def download_info_logs_from_host(host_idx, host):
             for j in range(node_instance):
-                c.get(PathMaker.node_log_info_file(i*node_instance+j,ts), local=PathMaker.node_log_info_file(i*node_instance+j,ts))
-                # c.get(PathMaker.node_log_debug_file(i*node_instance+j,ts), local=PathMaker.node_log_debug_file(i*node_instance+j,ts))
-                # c.get(PathMaker.node_log_error_file(i*node_instance+j,ts), local=PathMaker.node_log_error_file(i*node_instance+j,ts))
-                # c.get(PathMaker.node_log_warn_file(i*node_instance+j,ts), local=PathMaker.node_log_warn_file(i*node_instance+j,ts))
+                node_idx = host_idx * node_instance + j
+                self.download_from_host(host, 
+                    PathMaker.node_log_info_file(node_idx, ts), 
+                    PathMaker.node_log_info_file(node_idx, ts))
+            return host_idx
+
+        run_concurrent_tasks(download_info_logs_from_host, list(enumerate(hosts)), "Downloading logs")
 
         # Parse logs and return the parser.
         Print.info('Parsing logs and computing performance...')
