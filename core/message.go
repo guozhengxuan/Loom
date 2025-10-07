@@ -304,9 +304,9 @@ func (r *commitReq) MsgType() int {
 }
 
 type submitReq struct {
-	slot        Slot
-	round       int
-	uncommitted map[int]NodeID
+	slot      Slot
+	round     int
+	ucLeaders map[int]NodeID
 }
 
 type blockPullReq struct {
