@@ -173,7 +173,10 @@ func (d *dag) handleCommitReq(req *commitReq) {
 		b := line[i].Header
 		if b.Round == req.round && b.Slot.Height-b.FirstRefH >= 2 {
 			s := Slot{req.leader, b.Slot.Height - 2}
-			d.submitCh <- submitReq{s, req.round, d.decidedR, d.uncommitted}
+
+			uc := make([]NodeID, len(d.uncommitted))
+  			copy(uc, d.uncommitted)
+  			d.submitCh <- submitReq{s, req.round, d.decidedR, uc}
 			return
 		}
 	}
@@ -222,9 +225,7 @@ func (d *dag) handleCleanReq(req *gcReq) {
 	d.uncommitted = d.uncommitted[len(d.uncommitted)-1:]
 
 	// Clear pending entries.
-	for s := range d.pending {
-		delete(d.pending, s)
-	}
+	d.pending = make(map[Slot]chan<- *Block)
 }
 
 func (d *dag) run() {
