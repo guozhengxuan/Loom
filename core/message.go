@@ -304,9 +304,9 @@ func (r *commitReq) MsgType() int {
 }
 
 type submitReq struct {
-	slot  Slot
-	round int
-	decidedR int
+	slot      Slot
+	round     int
+	decidedR  int
 	undecided []NodeID
 }
 
@@ -320,7 +320,8 @@ func (r *blockPullReq) MsgType() int {
 }
 
 type gcReq struct {
-	newH map[NodeID]int
+	round int
+	newH  map[NodeID]int
 }
 
 func (r *gcReq) MsgType() int {

@@ -17,7 +17,6 @@ type dag struct {
 	opCh          chan Message           // read & write operations received from corer and commitor.
 	submitCh      chan submitReq         // forward commit request from corer to commitor.
 	pending       map[Slot]chan<- *Block // register one-shot reply channel for pending pulls.
-	pendingCommit *commitReq             // commit requests in processing.
 }
 
 func NewDag(nodeID NodeID, committee *Committee, opCh chan Message) *dag {
@@ -137,8 +136,8 @@ func (d *dag) handleRefReq(req *refReq) {
 	req.refRespCh <- ref
 }
 
-func (d *dag) isAnchorReady(curR int) bool {
-	for r := d.decidedR; r <= curR; r += 2 {
+func (d *dag) allLeadersReady(curR int) bool {
+	for r := 0; r <= (curR-d.decidedR)/2; r++ {
 		if d.uncommitted[r] == NONE {
 			return false
 		}
@@ -151,43 +150,33 @@ func (d *dag) handleCommitReq(req *commitReq) {
 		req.round,
 		req.leader)
 
-	// Update the pending commit.
-	if d.pendingCommit == nil || d.pendingCommit.round < req.round {
-		d.pendingCommit = req
-	}
-
 	// Add leader to trace.
-	if req.round < d.pendingCommit.round {
-		d.uncommitted[(req.round-d.decidedR)/2] = req.leader
-	} else {
-		for len(d.uncommitted) < req.round-d.decidedR/2 {
-			d.uncommitted = append(d.uncommitted, NONE)
-		}
-		d.uncommitted = append(d.uncommitted, req.leader)
+	idx := (req.round - d.decidedR) / 2
+	for len(d.uncommitted) <= idx {
+		d.uncommitted = append(d.uncommitted, NONE)
 	}
+	d.uncommitted[idx] = req.leader
 
 	// Delay commit if lack of some previous leader.
-	if !d.isAnchorReady(d.pendingCommit.round) {
+	if !d.allLeadersReady(req.round) {
 		return
 	}
 
 	// It's safe to submit all previous blocks starting from the one
 	// in the second position before the leader's highest block.
-	line := d.cache[d.pendingCommit.leader]
+	line := d.cache[req.leader]
 	for i := len(line) - 1; i >= 0; i-- {
 		if line[i] == nil {
 			continue
 		}
 
 		b := line[i].Header
-		if b.Round == d.pendingCommit.round && b.Slot.Height-b.FirstRefH >= 2 {
-			s := Slot{d.pendingCommit.leader, b.Slot.Height - 2}
-			d.submitCh <- submitReq{s, d.pendingCommit.round, d.decidedR, d.uncommitted}
+		if b.Round == req.round && b.Slot.Height-b.FirstRefH >= 2 {
+			s := Slot{req.leader, b.Slot.Height - 2}
+			d.submitCh <- submitReq{s, req.round, d.decidedR, d.uncommitted}
 			return
 		}
 	}
-
-	d.pendingCommit = nil
 }
 
 func (d *dag) handleBlockPullReq(req *blockPullReq) {
@@ -215,7 +204,7 @@ func (d *dag) handleBlockPullReq(req *blockPullReq) {
 
 func (d *dag) handleCleanReq(req *gcReq) {
 	logger.Debug.Printf("DAG handling clean request of freshly committed round %d\n",
-		d.pendingCommit.round)
+		req.round)
 
 	// Remove committed blocks and update watermark.
 	for id := range req.newH {
@@ -229,9 +218,8 @@ func (d *dag) handleCleanReq(req *gcReq) {
 	}
 
 	// Update committed rounds.
-	d.decidedR = d.pendingCommit.round
+	d.decidedR = req.round
 	d.uncommitted = d.uncommitted[len(d.uncommitted)-1:]
-	d.pendingCommit = nil
 
 	// Clear pending entries.
 	for s := range d.pending {

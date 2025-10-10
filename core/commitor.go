@@ -20,8 +20,8 @@ func (c *Commitor) pullBlock(slot Slot) *Block {
 // Returns all uncommitted blocks reachable from the entrance block.
 func (c *Commitor) undecidedHistory(ent Slot) map[Slot]*Block {
 	hist := make(map[Slot]*Block)
-	q := []Slot{ent}
 
+	q := []Slot{ent}
 	for len(q) > 0 {
 		head := q[0]
 		q = q[1:]
@@ -49,9 +49,13 @@ func (c *Commitor) undecidedHistory(ent Slot) map[Slot]*Block {
 }
 
 func (c *Commitor) submit(H map[Slot]*Block, uncommitted []NodeID) {
+	logger.Debug.Printf("submitting H sized %d, uncommitted sized %d\n",
+		len(H),
+		len(uncommitted))
+
 	preH := make(map[Slot]*Block)
 
-	for preR := len(uncommitted)-1; preR >= 0; preR-- {
+	for preR := len(uncommitted)-2; preR >= 0; preR-- {
 		// Find all blocks from the previous leader at previous wave (round r-2).
 		var ancS *Slot
 		for _, block := range H {
@@ -118,15 +122,15 @@ func (c *Commitor) commit(req submitReq) {
 	c.submit(H, req.undecided)
 
 	// Write new watermark for garbage collection.
-	wm := make(map[NodeID]int)
+	newH := make(map[NodeID]int)
 	for b := range H {
-		if h, ok := wm[b.Author]; !ok || b.Height > h {
-			wm[b.Author] = b.Height
+		if h, ok := newH[b.Author]; !ok || b.Height > h {
+			newH[b.Author] = b.Height
 		}
 	}
 
 	// Send cleanup request back to dag.
-	gcReq := gcReq{wm}
+	gcReq := gcReq{req.round, newH}
 	c.reqCh <- &gcReq
 }
 
