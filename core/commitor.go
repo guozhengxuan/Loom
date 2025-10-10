@@ -17,8 +17,7 @@ func (c *Commitor) pullBlock(slot Slot) *Block {
 	return <-blockCh
 }
 
-// undecidedHistory computes UNDECIDEDHISTORY(B) from Algorithm 5.
-// Returns all uncommitted blocks reachable from B.
+// Returns all uncommitted blocks reachable from the entrance block.
 func (c *Commitor) undecidedHistory(ent Slot) map[Slot]*Block {
 	hist := make(map[Slot]*Block)
 	q := []Slot{ent}
@@ -49,104 +48,64 @@ func (c *Commitor) undecidedHistory(ent Slot) map[Slot]*Block {
 	return hist
 }
 
-// submit implements the recursive SUBMIT(r, H) procedure from Algorithm 5.
-// Returns the set of blocks in H that should be committed at this round.
-func (c *Commitor) submit(r int, H map[Slot]*Block, uncommitted map[int]NodeID) map[Slot]*Block {
-	// Line 18-19: if r ≤ decidedR ∨ H = ⊥ then return
-	leader, ok := uncommitted[r-2]
-	if !ok || len(H) == 0 {
-		return make(map[Slot]*Block)
-	}
+func (c *Commitor) submit(H map[Slot]*Block, uncommitted []NodeID) {
+	preH := make(map[Slot]*Block)
 
-	// Line 20: S ← {B ∈ H | B.p = leaders[r-2] ∧ B.r = r-2}
-	// Find all blocks from the leader of round r-2 at round r-2.
-	S := make([]*Block, 0)
-	for _, block := range H {
-		b := block.Header
-		if b.Round == r-2 && b.Slot.Author == leader && b.Slot.Height-b.FirstRefH >= 1 {
-			S = append(S, block)
+	for preR := len(uncommitted)-1; preR >= 0; preR-- {
+		// Find all blocks from the previous leader at previous wave (round r-2).
+		var ancS *Slot
+		for _, block := range H {
+			b := block.Header
+			if b.Round == preR && b.Slot.Author == uncommitted[preR] {
+				if ancS == nil || ancS.Height < b.Slot.Height {
+					ancS = &b.Slot
+				}
+			}
+		}
+		if ancS != nil {
+			preH = c.undecidedHistory(*ancS)
+			c.submit(preH, uncommitted[:preR+1])
+			break
 		}
 	}
 
-	// Line 21: B_anc ← argmax{B'.h}
-	var anc *Block
-	for _, block := range S {
-		if anc == nil || block.Header.Slot.Height > anc.Header.Slot.Height {
-			anc = block
-		}
-	}
-
-	Hpre := H // Line 22: H_pre ← H
-
-	// Line 23-25: if B_anc ≠ ⊥ then
-	if anc != nil {
-		// Line 24: H_pre ← UNDECIDEDHISTORY(B_anc)
-		Hpre = c.undecidedHistory(anc.Header.Slot)
-
-		// Line 25: SUBMIT(r-1, H_pre)
-		c.submit(r-2, Hpre, uncommitted)
-	}
-
-	// Line 26: SUBMITHISTORY(r, H \ H_pre)
-	// Compute H \ H_pre (set difference).
 	left := make(map[Slot]*Block)
-	for slot, block := range H {
-		if _, inHpre := Hpre[slot]; !inHpre {
-			left[slot] = block
+	for s, b := range H {
+		if _, in := preH[s]; !in {
+			left[s] = b
 		}
 	}
 
-	return c.submitHistory(r, left, uncommitted)
+	c.submitHistory(left, uncommitted[len(uncommitted)-1])
 }
 
-// submitHistory implements SUBMITHISTORY(r, H) from Algorithm 5 lines 27-32.
-// Marks blocks as decided and outputs them in the correct order.
-func (c *Commitor) submitHistory(r int, H map[Slot]*Block, uncommitted map[int]NodeID) map[Slot]*Block {
-	// Line 29: isDecided[B] ← true (implicitly done by committing)
-
-	// Line 30: S ← {B ∈ H | B.p = leaders[r]}
-	leader, ok := uncommitted[r]
-	if !ok {
-		return H
-	}
-
-	S := make([]*Block, 0)
-	nonS := make([]*Block, 0)
-
+func (c *Commitor) submitHistory(H map[Slot]*Block, leader NodeID) {
+	ordered := make([]*Block, 0, len(H))
 	for _, block := range H {
-		if block.Header.Slot.Author == leader {
-			S = append(S, block)
-		} else {
-			nonS = append(nonS, block)
-		}
+		ordered = append(ordered, block)
 	}
 
-	// Line 31: output B ∈ H \ S in some deterministic order
-	// Sort non-leader blocks deterministically.
-	sort.Slice(nonS, func(i, j int) bool {
-		s1, s2 := nonS[i].Header.Slot, nonS[j].Header.Slot
+	sort.Slice(ordered, func(i, j int) bool {
+		s1, s2 := ordered[i].Header.Slot, ordered[j].Header.Slot
 		if s1.Author == s2.Author {
 			return s1.Height < s2.Height
 		}
+
+		// For safety, blocks of current leader are in the tail position.
+		if s1.Author == leader {
+			return false
+		}
+		if s2.Author == leader {
+			return true
+		}
+
 		return s1.Author < s2.Author
 	})
 
-	// Execute non-leader blocks.
-	for _, block := range nonS {
+	// Execute blocks in order.
+	for _, block := range ordered {
 		c.exec(block)
 	}
-
-	// Line 32: output B ∈ S in the height-ascending order
-	sort.Slice(S, func(i, j int) bool {
-		return S[i].Header.Slot.Height < S[j].Header.Slot.Height
-	})
-
-	// Execute leader blocks in height order.
-	for _, block := range S {
-		c.exec(block)
-	}
-
-	return H
 }
 
 func (c *Commitor) commit(req submitReq) {
@@ -154,21 +113,15 @@ func (c *Commitor) commit(req submitReq) {
 		req.slot.Height,
 		req.slot.Author)
 
-	// Build initial history H starting from the requested slot.
 	H := c.undecidedHistory(req.slot)
 
-	if len(H) == 0 {
-		return
-	}
-
-	// Call recursive SUBMIT(r, H) which will handle the entire commit logic.
-	c.submit(req.round, H, req.ucLeaders)
+	c.submit(H, req.undecided)
 
 	// Write new watermark for garbage collection.
 	wm := make(map[NodeID]int)
-	for slot := range H {
-		if h, ok := wm[slot.Author]; !ok || slot.Height > h {
-			wm[slot.Author] = slot.Height
+	for b := range H {
+		if h, ok := wm[b.Author]; !ok || b.Height > h {
+			wm[b.Author] = b.Height
 		}
 	}
 

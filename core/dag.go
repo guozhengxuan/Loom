@@ -8,10 +8,11 @@ type dag struct {
 	nodeID    NodeID
 	committee *Committee
 
-	cache       [][]*Block     // store blocks of the entire DAG
-	cacheMark   map[NodeID]int // height of highest committed block
-	uncommitted map[int]NodeID // uncommitted leaders of each round.
-	commitMark  int            // highest committed round.
+	cache [][]*Block // store blocks of the entire DAG
+
+	decidedH    map[NodeID]int // height of highest committed block
+	decidedR    int            // leaders of all rounds before decidedR are safely out of trace.
+	uncommitted []NodeID       // uncommitted leaders of each round.
 
 	opCh          chan Message           // read & write operations received from corer and commitor.
 	submitCh      chan submitReq         // forward commit request from corer to commitor.
@@ -24,23 +25,23 @@ func NewDag(nodeID NodeID, committee *Committee, opCh chan Message) *dag {
 		nodeID:      nodeID,
 		committee:   committee,
 		cache:       make([][]*Block, committee.Size()),
-		cacheMark:   make(map[NodeID]int, committee.Size()),
-		uncommitted: make(map[int]NodeID, 100),
-		commitMark:  -2,
+		decidedH:    make(map[NodeID]int, committee.Size()),
+		uncommitted: make([]NodeID, 0),
+		decidedR:    0,
 		opCh:        opCh,
 		submitCh:    make(chan submitReq, 100),
 		pending:     make(map[Slot]chan<- *Block),
 	}
 
 	for i := 0; i < committee.Size(); i++ {
-		dag.cacheMark[NodeID(i)] = -1
+		dag.decidedH[NodeID(i)] = -1
 	}
 
 	return dag
 }
 
 func (d *dag) get(author NodeID, height int) *Block {
-	i := height - d.cacheMark[author] - 1
+	i := height - d.decidedH[author] - 1
 	if i >= 0 && i < len(d.cache[author]) {
 		return d.cache[author][i]
 	}
@@ -54,7 +55,7 @@ func (d *dag) handleCheckReq(req *checkReq) {
 	for _, header := range req.items {
 		b := header.Slot
 
-		index := b.Height - d.cacheMark[b.Author] - 1
+		index := b.Height - d.decidedH[b.Author] - 1
 
 		if index >= len(d.cache[b.Author]) || index >= 0 && d.cache[b.Author][index] == nil {
 			miss = append(miss, header)
@@ -72,7 +73,7 @@ func (d *dag) handleBlockPushReq(block *Block) {
 		b.Author,
 		b.Height)
 
-	index := b.Height - d.cacheMark[b.Author] - 1
+	index := b.Height - d.decidedH[b.Author] - 1
 
 	if index < 0 {
 		return
@@ -137,8 +138,8 @@ func (d *dag) handleRefReq(req *refReq) {
 }
 
 func (d *dag) isAnchorReady(curR int) bool {
-	for r := d.commitMark + 2; r <= curR; r+=2 {
-		if _, ok := d.uncommitted[r]; !ok {
+	for r := d.decidedR; r <= curR; r += 2 {
+		if d.uncommitted[r] == NONE {
 			return false
 		}
 	}
@@ -150,13 +151,22 @@ func (d *dag) handleCommitReq(req *commitReq) {
 		req.round,
 		req.leader)
 
-	d.uncommitted[req.round] = req.leader
-
+	// Update the pending commit.
 	if d.pendingCommit == nil || d.pendingCommit.round < req.round {
 		d.pendingCommit = req
 	}
 
-	// Delay commit if lack of some previous leaders.
+	// Add leader to trace.
+	if req.round < d.pendingCommit.round {
+		d.uncommitted[(req.round-d.decidedR)/2] = req.leader
+	} else {
+		for len(d.uncommitted) < req.round-d.decidedR/2 {
+			d.uncommitted = append(d.uncommitted, NONE)
+		}
+		d.uncommitted = append(d.uncommitted, req.leader)
+	}
+
+	// Delay commit if lack of some previous leader.
 	if !d.isAnchorReady(d.pendingCommit.round) {
 		return
 	}
@@ -172,7 +182,7 @@ func (d *dag) handleCommitReq(req *commitReq) {
 		b := line[i].Header
 		if b.Round == d.pendingCommit.round && b.Slot.Height-b.FirstRefH >= 2 {
 			s := Slot{d.pendingCommit.leader, b.Slot.Height - 2}
-			d.submitCh <- submitReq{s, d.pendingCommit.round, d.uncommitted}
+			d.submitCh <- submitReq{s, d.pendingCommit.round, d.decidedR, d.uncommitted}
 			return
 		}
 	}
@@ -189,13 +199,13 @@ func (d *dag) handleBlockPullReq(req *blockPullReq) {
 	replyCh := req.blockPullCh
 
 	// Empty reply for committed blocks.
-	if b.Height <= d.cacheMark[b.Author] {
+	if b.Height <= d.decidedH[b.Author] {
 		replyCh <- nil
 		return
 	}
 
 	// Reply the block if received, otherwise wait for outer core to deliver.
-	index := b.Height - d.cacheMark[b.Author] - 1
+	index := b.Height - d.decidedH[b.Author] - 1
 	if index < len(d.cache[b.Author]) && d.cache[b.Author][index] != nil {
 		replyCh <- d.cache[b.Author][index]
 	} else {
@@ -208,23 +218,20 @@ func (d *dag) handleCleanReq(req *gcReq) {
 		d.pendingCommit.round)
 
 	// Remove committed blocks and update watermark.
-	for id := range req.newWatermark {
-		next := req.newWatermark[id] - d.cacheMark[id]
+	for id := range req.newH {
+		next := req.newH[id] - d.decidedH[id]
 
 		if len(d.cache[id]) > 0 {
 			d.cache[id] = d.cache[id][next:]
 		}
 
-		d.cacheMark[id] = req.newWatermark[id]
+		d.decidedH[id] = req.newH[id]
 	}
 
-	// Remove committed anchors.
-	d.commitMark = d.pendingCommit.round
-	for r := range d.uncommitted {
-		if r <= d.commitMark {
-			delete(d.uncommitted, r)
-		}
-	}
+	// Update committed rounds.
+	d.decidedR = d.pendingCommit.round
+	d.uncommitted = d.uncommitted[len(d.uncommitted)-1:]
+	d.pendingCommit = nil
 
 	// Clear pending entries.
 	for s := range d.pending {
