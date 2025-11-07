@@ -42,7 +42,7 @@ def local(ctx):
         Print.error(e)
 
 @task
-def create(ctx, nodes=7):
+def create(ctx, nodes=2):
     ''' Create a testbed'''
     try:
         InstanceManager.make().create_instances(nodes)
@@ -91,7 +91,7 @@ def install(ctx):
 @task
 def uploadexec(ctx):
     try:
-        Bench(ctx).upload_exec()
+        Bench(ctx).pull_exec()
     except BenchError as e:
         Print.error(e)
 
@@ -107,11 +107,11 @@ def info(ctx):
 def remote(ctx):
     ''' Run benchmarks on AWS '''
     bench_params = {
-        'nodes': [31],
+        'nodes': [10],
         'node_instance': 1,                                             # the number of running instance for a node  (max = 4)
-        'duration': 40,
-        'rate': 5_000,                                                  # tx send rate
-        'batch_size': [1000],                              # the max number of tx that can be hold 
+        'duration': 30,
+        'rate': 8_000,                                                  # tx send rate
+        'batch_size': [250, 500, 750, 1000, 1250, 1500],                              # the max number of tx that can be hold 
         'log_level': 0b1111,                                            # 0x1 infolevel 0x2 debuglevel 0x4 warnlevel 0x8 errorlevel
         'protocol_name': "Wahoo++",
         'runs': 1

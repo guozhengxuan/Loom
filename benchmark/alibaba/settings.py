@@ -6,11 +6,11 @@ class SettingsError(Exception):
 
 
 class Settings:
-    def __init__(self, key_name, key_path,accesskey_path, consensus_port,instance_type, aws_regions):
+    def __init__(self, key_name, key_path,accesskey_path, consensus_port,instance_type, aws_regions, repo_url, repo_branch):
         regions = aws_regions if isinstance(
             aws_regions, list) else [aws_regions]
         inputs_str = [
-            key_name, key_path, instance_type
+            key_name, key_path, instance_type, repo_url, repo_branch
         ]
         inputs_str += regions
         inputs_int = [consensus_port]
@@ -23,11 +23,14 @@ class Settings:
         self.key_name = key_name
         self.key_path = key_path
         self.accesskey_path = accesskey_path
-        
+
         self.consensus_port = consensus_port
 
         self.instance_type = instance_type
         self.aws_regions = regions
+
+        self.repo_url = repo_url
+        self.repo_branch = repo_branch
 
     @classmethod
     def load(cls, filename):
@@ -42,6 +45,8 @@ class Settings:
                 data['ports']['consensus'],
                 data['instances']['type'],
                 data['instances']['regions'],
+                data['repo']['url'],
+                data['repo']['branch'],
             )
         except (OSError, JSONDecodeError) as e:
             raise SettingsError(str(e))

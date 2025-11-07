@@ -1,20 +1,24 @@
 {
     "key": {
-        "name": "wahooplus",
-        "path": "/home/gzx/.ssh/id_ed25519",
-        "accesskey": "/home/gzx/.aliyun/access.json"
+        "name": "Loom",
+        "path": "/Users/zhengxuanguo/.ssh/id_ed25519",
+        "accesskey": "/Users/zhengxuanguo/.aliyun/access_mainland.json"
     },
     "ports": {
         "consensus": 8000
     },
     "instances": {
-        "type": "ecs.g6e.xlarge",
+        "type": "ecs.g9i.xlarge",
         "regions": [
             "eu-central-1",
             "eu-west-1",
+            "us-east-1",
             "ap-southeast-1",
-            "ap-northeast-1",
             "ap-northeast-2"
         ]
+    },
+    "repo": {
+        "url": "https://github.com/guozhengxuan/Loom.git",
+        "branch": "debug"
     }
 }

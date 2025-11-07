@@ -18,8 +18,8 @@ from alibaba.settings import Settings, SettingsError
 
 
 class InstanceManager:
-    INSTANCE_NAME = 'wahooplus'
-    SECURITY_GROUP_NAME = 'wahooplus'
+    INSTANCE_NAME = 'Loom'
+    SECURITY_GROUP_NAME = 'Loom'
 
     def __init__(self, settings):
         assert isinstance(settings, Settings)
@@ -74,12 +74,13 @@ class InstanceManager:
                             ips[region] += [ip]
 
         except Exception as error:
-            # 此处仅做打印展示，请谨慎对待异常处理，在工程项目中切勿直接忽略异常。
-            # 错误 message
-            print(error.message)
-            # 诊断地址
-            print(error.data.get("Recommend"))
-            UtilClient.assert_as_string(error.message)
+            # Handle both Alibaba Cloud API errors and standard Python exceptions
+            if hasattr(error, 'message') and error.message:
+                print(f"Error message: {error.message}")
+                if hasattr(error, 'data') and error.data:
+                    print(f"Recommend: {error.data.get('Recommend', 'N/A')}")
+            # Re-raise the exception so it can be handled by the retry logic
+            raise
 
         return ids, ips
 
@@ -95,10 +96,11 @@ class InstanceManager:
     def _create_security_group(self, client, region):
         try:
             temp = {}
-            # step 0: 查询vpc
+
+            # step 0: Query VPC.
             describe_vpcs_request = vpc_20160428_models.DescribeVpcsRequest(
                 region_id = region,
-                vpc_name='wahooplus'
+                vpc_name='Loom'
             )
             
             resp = self.vpc_clients[region].describe_vpcs_with_options(describe_vpcs_request, self.aliyun_runtime).to_map()
@@ -142,12 +144,13 @@ class InstanceManager:
             client.authorize_security_group_with_options(authorize_security_group_request, self.aliyun_runtime)
 
         except Exception as error:
-            # 此处仅做打印展示，请谨慎对待异常处理，在工程项目中切勿直接忽略异常。
-            # 错误 message
-            print(error.message)
-            # 诊断地址
-            print(error.data.get("Recommend"))
-            UtilClient.assert_as_string(error.message)
+            # Handle both Alibaba Cloud API errors and standard Python exceptions
+            if hasattr(error, 'message') and error.message:
+                print(f"Error message: {error.message}")
+                if hasattr(error, 'data') and error.data:
+                    print(f"Recommend: {error.data.get('Recommend', 'N/A')}")
+            # Re-raise the exception so it can be handled by the retry logic
+            raise
 
     def _get_ami(self, client,region):
         # The AMI changes with regions.
@@ -170,22 +173,33 @@ class InstanceManager:
             return resp['body']['Images']['Image'][0]['ImageId']
 
         except Exception as error:
-            # 此处仅做打印展示，请谨慎对待异常处理，在工程项目中切勿直接忽略异常。
-            # 错误 message
-            print(error.message)
-            # 诊断地址
-            print(error.data.get("Recommend"))
-            UtilClient.assert_as_string(error.message)
+            # Handle both Alibaba Cloud API errors and standard Python exceptions
+            if hasattr(error, 'message') and error.message:
+                print(f"Error message: {error.message}")
+                if hasattr(error, 'data') and error.data:
+                    print(f"Recommend: {error.data.get('Recommend', 'N/A')}")
+            # Re-raise the exception so it can be handled by the retry logic
+            raise
 
     def create_instances(self, instances):
         assert isinstance(instances, int) and instances > 0
 
         # Create the security group in every region.
         for region,client in self.ecs_clients.items():
-            try:
-                self._create_security_group(client, region)
-            except Exception as e:
-                raise BenchError('Failed to create security group', e)
+            Print.info(f'Creating security group in region: {region}')
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    self._create_security_group(client, region)
+                    Print.info(f'✓ Successfully created security group in {region}')
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 2  # 2s, 4s, 6s
+                        Print.warn(f'Attempt {attempt + 1} failed for {region}: {type(e).__name__}. Retrying in {wait_time}s...')
+                        sleep(wait_time)
+                    else:
+                        raise BenchError(f'Failed to create security group in {region} after {max_retries} attempts', e)
 
         try:
             # Create all instances.
@@ -225,12 +239,13 @@ class InstanceManager:
             self._wait(['Pending'])
             Print.heading(f'Successfully created {size} new instances')
         except Exception as error:
-            # 此处仅做打印展示，请谨慎对待异常处理，在工程项目中切勿直接忽略异常。
-            # 错误 message
-            print(error.message)
-            # 诊断地址
-            print(error.data.get("Recommend"))
-            UtilClient.assert_as_string(error.message)
+            # Handle both Alibaba Cloud API errors and standard Python exceptions
+            if hasattr(error, 'message') and error.message:
+                print(f"Error message: {error.message}")
+                if hasattr(error, 'data') and error.data:
+                    print(f"Recommend: {error.data.get('Recommend', 'N/A')}")
+            # Re-raise the exception so it can be handled by the retry logic
+            raise
 
     def terminate_instances(self):
         
@@ -288,12 +303,13 @@ class InstanceManager:
             Print.heading(f'Starting {size} instances')
 
         except Exception as error:
-            # 此处仅做打印展示，请谨慎对待异常处理，在工程项目中切勿直接忽略异常。
-            # 错误 message
-            print(error.message)
-            # 诊断地址
-            print(error.data.get("Recommend"))
-            UtilClient.assert_as_string(error.message)
+            # Handle both Alibaba Cloud API errors and standard Python exceptions
+            if hasattr(error, 'message') and error.message:
+                print(f"Error message: {error.message}")
+                if hasattr(error, 'data') and error.data:
+                    print(f"Recommend: {error.data.get('Recommend', 'N/A')}")
+            # Re-raise the exception so it can be handled by the retry logic
+            raise
 
     def stop_instances(self):
         try:

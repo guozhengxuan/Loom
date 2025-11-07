@@ -120,23 +120,35 @@ class Bench:
         run_concurrent_tasks(partial(self.upload_to_host, local_path=PathMaker.parameters_file(), remote_path='.'), hosts, "Uploading parameter files")
 
     def install(self):
-        Print.info("Installing...")
+        Print.info("Installing dependencies on remote servers...")
         cmd = [
             'sudo apt-get update',
             'sudo DEBIAN_FRONTEND=noninteractive apt-get -y upgrade',
             'sudo apt-get -y autoremove',
 
-            # The following dependencies prevent the error: [error: linker `cc` not found].
-            'sudo apt-get -y install tmux',
+            # Install software-properties-common for add-apt-repository
+            'sudo apt-get -y install software-properties-common',
+
+            # Add golang backports PPA for newer Go version
+            'sudo add-apt-repository -y ppa:longsleep/golang-backports',
+            'sudo apt-get update',
+
+            # Install required dependencies: tmux, git, and latest golang
+            'sudo apt-get -y install tmux git golang-go',
         ]
-       
+
+        def install_on_host(host):
+            c = Connection(host, user='root', connect_kwargs=self.connect)
+            result = c.run(' && '.join(cmd), hide=True, warn=True)
+            if result.failed:
+                raise ExecutionError(f'Installation failed on {host}: {result.stderr}')
+            return host
+
         hosts = self.manager.hosts(flat=True)
         try:
-            g = Group(*hosts, user='root', connect_kwargs=self.connect)
-            g.run(' && '.join(cmd), hide=True)
+            run_concurrent_tasks(install_on_host, hosts, "Installing dependencies")
             Print.heading(f'Initialized testbed of {len(hosts)} nodes')
-        except (GroupException, ExecutionError) as e:
-            e = FabricError(e) if isinstance(e, GroupException) else e
+        except Exception as e:
             raise BenchError('Failed to install repo on testbed', e)
 
     def upload_to_host(self, host, local_path, remote_path):
@@ -149,14 +161,41 @@ class Bench:
         c.get(remote_path, local=local_path)
         return host
 
-    def upload_exec(self):
+    def pull_exec(self):
         hosts = self.manager.hosts(flat=True)
-        # Recompile the latest code.
-        cmd = CommandMaker.compile().split()
-        subprocess.run(cmd, check=True)
-        # Upload execute files concurrently.
-        run_concurrent_tasks(partial(self.upload_to_host, local_path=PathMaker.execute_file(), remote_path='.'), 
-            hosts, "Uploading main files")
+        repo_url = self.settings.repo_url
+        branch = self.settings.repo_branch
+
+        Print.info(f'Pulling code from {repo_url} (branch: {branch}) and compiling on remote servers...')
+
+        def pull_and_compile(host):
+            c = Connection(host, user='root', connect_kwargs=self.connect)
+
+            # Check if Loom directory exists
+            result = c.run('test -d Loom', warn=True, hide=True)
+
+            if result.ok:
+                # Directory exists, pull latest changes
+                c.run(f'cd Loom && git fetch origin && git checkout {branch} && git pull origin {branch}', hide=True)
+            else:
+                # Directory doesn't exist, clone the repository
+                c.run(f'git clone -b {branch} {repo_url}', hide=True)
+
+            # Tidy modules and compile the code on remote server
+            Print.info(f'  {host}: Running go mod tidy and building')
+            result = c.run('cd Loom && go mod tidy && go build main.go', warn=True)
+            if result.failed:
+                Print.error(BenchError(f'Compilation failed on {host}', Exception(result.stderr)))
+                raise ExecutionError(f'Compilation failed on {host}: {result.stderr}')
+
+            # Copy the compiled binary to home directory for execution
+            c.run('cp Loom/main .', hide=True)
+            Print.info(f'  {host}: ✓ Successfully compiled and deployed')
+
+            return host
+
+        # Pull and compile concurrently on all hosts
+        run_concurrent_tasks(pull_and_compile, hosts, "Pulling code and compiling")
 
     def _config(self, hosts,bench_parameters):
         Print.info('Generating configuration files...')
