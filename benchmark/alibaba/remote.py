@@ -126,15 +126,18 @@ class Bench:
             'sudo DEBIAN_FRONTEND=noninteractive apt-get -y upgrade',
             'sudo apt-get -y autoremove',
 
-            # Install software-properties-common for add-apt-repository
-            'sudo apt-get -y install software-properties-common',
+            # Install tmux and git only
+            'sudo apt-get -y install tmux git wget',
 
-            # Add golang backports PPA for newer Go version
-            'sudo add-apt-repository -y ppa:longsleep/golang-backports',
-            'sudo apt-get update',
+            # Download and install Go from official source
+            'wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz',
+            'sudo rm -rf /usr/local/go',
+            'sudo tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz',
+            'rm go1.21.5.linux-amd64.tar.gz',
 
-            # Install required dependencies: tmux, git, and latest golang
-            'sudo apt-get -y install tmux git golang-go',
+            # Create symlink to make 'go' available system-wide
+            'sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go',
+            'sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt',
         ]
 
         def install_on_host(host):
@@ -176,21 +179,18 @@ class Bench:
 
             if result.ok:
                 # Directory exists, pull latest changes
-                c.run(f'cd Loom && git fetch origin && git checkout {branch} && git pull origin {branch}', hide=True)
+                c.run(f'cd Loom && git fetch origin && git checkout {branch} && git pull origin {branch} && cd ..', hide=True)
             else:
                 # Directory doesn't exist, clone the repository
                 c.run(f'git clone -b {branch} {repo_url}', hide=True)
 
             # Tidy modules and compile the code on remote server
-            Print.info(f'  {host}: Running go mod tidy and building')
             result = c.run('cd Loom && go mod tidy && go build main.go', warn=True)
             if result.failed:
-                Print.error(BenchError(f'Compilation failed on {host}', Exception(result.stderr)))
                 raise ExecutionError(f'Compilation failed on {host}: {result.stderr}')
 
             # Copy the compiled binary to home directory for execution
             c.run('cp Loom/main .', hide=True)
-            Print.info(f'  {host}: ✓ Successfully compiled and deployed')
 
             return host
 
