@@ -107,11 +107,11 @@ def info(ctx):
 def remote(ctx):
     ''' Run benchmarks on AWS '''
     bench_params = {
-        'nodes': [10],
+        'nodes': [7],
         'node_instance': 1,                                             # the number of running instance for a node  (max = 4)
-        'duration': 30,
+        'duration': 20,
         'rate': 8_000,                                                  # tx send rate
-        'batch_size': [250, 500, 750, 1000, 1250, 1500],                              # the max number of tx that can be hold 
+        'batch_size': [4000, 8000],                              # the max number of tx that can be hold 
         'log_level': 0b1111,                                            # 0x1 infolevel 0x2 debuglevel 0x4 warnlevel 0x8 errorlevel
         'protocol_name': "Wahoo++",
         'runs': 1

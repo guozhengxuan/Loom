@@ -49,6 +49,10 @@ class Bench:
             ctx.connect_kwargs.pkey = Ed25519Key.from_private_key_file(
                 self.manager.settings.key_path
             )
+            # Add longer timeouts for Alibaba Cloud instances
+            ctx.connect_kwargs.timeout = 60  # Connection timeout in seconds
+            ctx.connect_kwargs.banner_timeout = 60  # SSH banner timeout in seconds
+            ctx.connect_kwargs.auth_timeout = 60  # Authentication timeout in seconds
             self.connect = ctx.connect_kwargs
         except (IOError, PasswordRequiredException, SSHException) as e:
             raise BenchError('Failed to load SSH key', e)
@@ -154,14 +158,32 @@ class Bench:
         except Exception as e:
             raise BenchError('Failed to install repo on testbed', e)
 
-    def upload_to_host(self, host, local_path, remote_path):
-        c = Connection(host, user='root', connect_kwargs=self.connect)
-        c.put(local_path, remote_path)
+    def upload_to_host(self, host, local_path, remote_path, max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                c = Connection(host, user='root', connect_kwargs=self.connect)
+                c.put(local_path, remote_path)
+                return host
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                    continue
+                else:
+                    raise ExecutionError(f'Failed to upload to {host} after {max_retries} attempts: {e}')
         return host
 
-    def download_from_host(self, host, remote_path, local_path):
-        c = Connection(host, user='root', connect_kwargs=self.connect)
-        c.get(remote_path, local=local_path)
+    def download_from_host(self, host, remote_path, local_path, max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                c = Connection(host, user='root', connect_kwargs=self.connect)
+                c.get(remote_path, local=local_path)
+                return host
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                    continue
+                else:
+                    raise ExecutionError(f'Failed to download from {host} after {max_retries} attempts: {e}')
         return host
 
     def pull_exec(self):
