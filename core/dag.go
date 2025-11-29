@@ -101,6 +101,7 @@ func (d *dag) handleRefReq(req *refReq) {
 	logger.Debug.Printf("DAG handling ref request of round %d\n", req.round)
 
 	ref := make([]Header, 0, d.committee.HightThreshold())
+	twoQC := 0
 
 	// Check if there are n-f new qualified blocks.
 	for _, line := range d.cache {
@@ -117,15 +118,16 @@ func (d *dag) handleRefReq(req *refReq) {
 
 		// Strong ref round requires two new blocks received from each node,
 		// while weak ref round requires only one.
-		if line[len(line)-1].Header.Round > req.round ||
-			req.round%2 == 0 && latestH-latestRefH >= 2 ||
-			req.round%2 == 1 && latestH-latestRefH >= 1 {
+		if line[len(line)-1].Header.Round > req.round || latestH-latestRefH >= 1 {
 			ref = append(ref, latestB)
+			if req.round%2 == 1 || latestH-latestRefH >= 2 {
+				twoQC++
+			}
 		}
 	}
 
 	// Otherwise the ref is Plain and only points to the parent block.
-	if len(ref) < d.committee.HightThreshold() {
+	if twoQC < d.committee.HightThreshold() {
 		size := len(d.cache[d.nodeID])
 		if size > 0 {
 			lastBlockHeader := d.cache[d.nodeID][size-1].Header
