@@ -103,7 +103,7 @@ func (d *dag) handleRefReq(req *refReq) {
 	ref := make([]Header, 0, d.committee.HightThreshold())
 	twoQC := 0
 
-	// Check if there are n-f new qualified blocks.
+	// 1. Check if there are n-f new qualified blocks.
 	for _, line := range d.cache {
 
 		// Ignore nodes from which no blocks of current round are received.
@@ -116,9 +116,16 @@ func (d *dag) handleRefReq(req *refReq) {
 		latestH := latestB.Slot.Height
 		latestRefH := latestB.FirstRefH
 
-		// Strong ref round requires two new blocks received from each node,
-		// while weak ref round requires only one.
-		if line[len(line)-1].Header.Round > req.round || latestH-latestRefH >= 1 {
+		// Directly add ref and twoQC count for proposers with blocks from future rounds.
+		if line[len(line)-1].Header.Round > req.round {
+			ref = append(ref, latestB)
+			twoQC++
+			continue
+		}
+
+		// For proposers at current round, strong ref round requires two new blocks
+		// received from each node, while weak ref round requires only one.
+		if latestH-latestRefH >= 1 {
 			ref = append(ref, latestB)
 			if req.round%2 == 1 || latestH-latestRefH >= 2 {
 				twoQC++
@@ -126,7 +133,7 @@ func (d *dag) handleRefReq(req *refReq) {
 		}
 	}
 
-	// Otherwise the ref is Plain and only points to the parent block.
+	// 2. Otherwise the ref is Plain and only points to the parent block.
 	if twoQC < d.committee.HightThreshold() {
 		size := len(d.cache[d.nodeID])
 		if size > 0 {
