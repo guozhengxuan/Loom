@@ -18,7 +18,7 @@ from benchmark.logs import LogParser, ParseError
 from alibaba.instance import InstanceManager
 
 
-def run_concurrent_tasks(task_fn, iterable, desc, max_workers=10):
+def run_concurrent_tasks(task_fn, iterable, desc, max_workers=64):
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(iterable))) as executor:
         futures = {executor.submit(task_fn, *args) if isinstance(args, tuple) 
                     else executor.submit(task_fn, args): args for args in iterable}
