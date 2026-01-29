@@ -113,11 +113,20 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 	corer.dagCh <- &refReq{round, respCh}
 	ref := <-respCh
 
+	// [EVAL] Log refs collection - for Graph 3 (Latency Decomposition)
+	logger.Info.Printf("[EVAL] REFS_COLLECTED node %d height %d round %d ref_count %d\n",
+		corer.nodeID, height, round, len(ref))
+
 	// If collected n-f refs, enter a new round.
 	firstRefH := oldFirstRefH
+	oldRound := round
 	if len(ref) > 1 {
 		firstRefH = height
 		round++
+
+		// [EVAL] Log round advance - for Graph 1 (Wave Efficiency)
+		logger.Info.Printf("[EVAL] ROUND_ADVANCED node %d old_round %d new_round %d\n",
+			corer.nodeID, oldRound, round)
 
 		// Invoke 2 * i th round leader election in 2 * i + 1 th rounds.
 		if round%2 == 1 {
@@ -132,6 +141,10 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 		corer.txpool.GetBatch(),
 		ref,
 		corer.sigService)
+
+	// [EVAL] Log block proposed - for Graph 2 (Cumulative Input)
+	logger.Info.Printf("[EVAL] BLOCK_PROPOSED node %d height %d round %d ref_count %d\n",
+		corer.nodeID, height, round, len(ref))
 
 	//BenchMark Log.
 	if block.Batch.Txs != nil {
