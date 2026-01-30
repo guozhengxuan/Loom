@@ -98,6 +98,9 @@ func (corer *Core) propose(height, round, oldFirstRefH int) error {
 	if err != nil {
 		return err
 	}
+	
+	// [EVAL] Log communication step - Propose (Round 1 of 2)
+	logger.Info.Printf("[EVAL] COMM_STEP_PROPOSE height %d round %d\n", height, round)
 
 	corer.transmitor.Send(corer.nodeID, NONE, b)
 	corer.transmitor.RecvChannel() <- b
@@ -166,6 +169,9 @@ func (corer *Core) handlePropose(block *Block) error {
 	if !block.Verify(corer.committee) {
 		return ErrSignature(block.MsgType(), b.Height, b.Author)
 	}
+
+	// [EVAL] Log communication step - Echo (Round 2 of 2)
+	logger.Info.Printf("[EVAL] COMM_STEP_ECHO height %d round %d\n", b.Height, block.Header.Round)
 
 	// Send echo.
 	echo, err := NewEcho(corer.nodeID, block, corer.sigService)
