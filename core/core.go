@@ -6,6 +6,7 @@ import (
 	"Wahoo++/pool"
 	"Wahoo++/store"
 	"sync"
+	"time"
 )
 
 type Core struct {
@@ -111,14 +112,17 @@ func (corer *Core) propose(height, round, oldFirstRefH int) error {
 func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error) {
 	logger.Debug.Printf("processing generateBlock height %d round %d\n", height, round)
 
+	// [EVAL] Broadcast Time End (For Loom, this marks the end of the previous "broadcast interval")
+	// As per definition: interval between successive invocations.
+	logger.Info.Printf("[EVAL] BROADCAST_END height %d round %d ts %d\n", height, round, time.Now().UnixNano())
+
 	// Request refs from dag.
 	respCh := make(chan []Header)
 	corer.dagCh <- &refReq{round, respCh}
 	ref := <-respCh
 
-	// [EVAL] Log refs collection - for Graph 3 (Latency Decomposition)
-	logger.Info.Printf("[EVAL] REFS_COLLECTED node %d height %d round %d ref_count %d\n",
-		corer.nodeID, height, round, len(ref))
+	// [EVAL] Comm Cost (2 for Loom)
+	logger.Info.Printf("[EVAL] COMM_COST val=2 height %d round %d ts %d\n", height, round, time.Now().UnixNano())
 
 	// If collected n-f refs, enter a new round.
 	firstRefH := oldFirstRefH
@@ -145,9 +149,9 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 		ref,
 		corer.sigService)
 
-	// [EVAL] Log block proposed - for Graph 2 (Cumulative Input)
-	logger.Info.Printf("[EVAL] BLOCK_PROPOSED node %d height %d round %d ref_count %d\n",
-		corer.nodeID, height, round, len(ref))
+	// [EVAL] Block New
+	logger.Info.Printf("[EVAL] BLOCK_NEW node %d height %d round %d ts %d\n",
+		corer.nodeID, height, round, time.Now().UnixNano())
 
 	//BenchMark Log.
 	if block.Batch.Txs != nil {
