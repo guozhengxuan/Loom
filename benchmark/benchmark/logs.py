@@ -183,51 +183,97 @@ class LogParser:
         return mean(latency) if latency else 0
 
     def _calculate_graph1_metrics(self):
-        """Calculate Graph 1: Wave Efficiency metrics."""
+        """Calculate Graph 1: Wave Efficiency metrics (per-node, then averaged)."""
         metrics = self.eval_metrics
 
-        # Total communication rounds
-        total_comm_cost = sum(item['value'] for item in metrics['comm_cost'])
+        # Group by node
+        comm_by_node = {}
+        blocks_by_node = {}
+        rounds_by_node = {}
 
-        # Total blocks created
-        total_blocks = len(metrics['block_new'])
+        for item in metrics['comm_cost']:
+            node = item.get('node', 0)
+            if node not in comm_by_node:
+                comm_by_node[node] = 0
+            comm_by_node[node] += item['value']
 
-        # Total rounds advanced
-        total_rounds = len(metrics['round_advanced'])
+        for item in metrics['block_new']:
+            node = item['node']
+            if node not in blocks_by_node:
+                blocks_by_node[node] = 0
+            blocks_by_node[node] += 1
+
+        for item in metrics['round_advanced']:
+            node = item['node']
+            if node not in rounds_by_node:
+                rounds_by_node[node] = 0
+            rounds_by_node[node] += 1
+
+        # Calculate per-node metrics
+        per_node_data = {}
+        all_nodes = set(blocks_by_node.keys())
+
+        for node in all_nodes:
+            node_comm = comm_by_node.get(node, 0)
+            node_blocks = blocks_by_node.get(node, 0)
+            node_rounds = rounds_by_node.get(node, 0)
+            per_node_data[node] = {
+                'comm_rounds': node_comm,
+                'blocks': node_blocks,
+                'round_advances': node_rounds,
+                'comm_rounds_per_block': node_comm / node_blocks if node_blocks > 0 else 0,
+            }
+
+        # Calculate averages across nodes
+        num_nodes = len(all_nodes) if all_nodes else 1
+        avg_comm_rounds = mean([d['comm_rounds'] for d in per_node_data.values()]) if per_node_data else 0
+        avg_blocks = mean([d['blocks'] for d in per_node_data.values()]) if per_node_data else 0
+        avg_round_advances = mean([d['round_advances'] for d in per_node_data.values()]) if per_node_data else 0
+        avg_comm_per_block = mean([d['comm_rounds_per_block'] for d in per_node_data.values()]) if per_node_data else 0
 
         return {
-            'total_comm_rounds': total_comm_cost,
-            'total_blocks': total_blocks,
-            'total_round_advances': total_rounds,
-            'comm_rounds_per_block': total_comm_cost / total_blocks if total_blocks > 0 else 0,
+            'avg_comm_rounds_per_node': avg_comm_rounds,
+            'avg_blocks_per_node': avg_blocks,
+            'avg_round_advances_per_node': avg_round_advances,
+            'avg_comm_rounds_per_block': avg_comm_per_block,
+            'num_nodes': num_nodes,
+            'per_node_data': per_node_data,
         }
 
     def _calculate_graph2_metrics(self):
-        """Calculate Graph 2: Input Throughput metrics (cumulative blocks over time)."""
-        block_events = sorted(self.eval_metrics['block_new'], key=lambda x: x['ts_ns'])
+        """Calculate Graph 2: Input Throughput metrics (per-node cumulative blocks over time)."""
+        # Group by node
+        blocks_by_node = {}
+        for event in self.eval_metrics['block_new']:
+            node = event['node']
+            if node not in blocks_by_node:
+                blocks_by_node[node] = []
+            blocks_by_node[node].append(event)
 
-        if not block_events:
-            return {'cumulative_blocks': []}
+        per_node_cumulative = {}
+        for node, events in blocks_by_node.items():
+            sorted_events = sorted(events, key=lambda x: x['ts_ns'])
+            if not sorted_events:
+                continue
+            start_ts = sorted_events[0]['ts_ns']
+            cumulative = []
+            for i, event in enumerate(sorted_events):
+                cumulative.append({
+                    'time_ms': (event['ts_ns'] - start_ts) / 1e6,
+                    'cumulative_count': i + 1,
+                    'height': event['height'],
+                })
+            per_node_cumulative[node] = cumulative
 
-        # Create cumulative block count over time
-        start_ts = block_events[0]['ts_ns']
-        cumulative = []
-        for i, event in enumerate(block_events):
-            cumulative.append({
-                'time_ms': (event['ts_ns'] - start_ts) / 1e6,  # Convert ns to ms
-                'cumulative_count': i + 1,
-                'height': event['height'],
-                'node': event['node']
-            })
-
-        return {'cumulative_blocks': cumulative}
+        return {'per_node_cumulative': per_node_cumulative}
 
     def _calculate_graph3_metrics(self):
-        """Calculate Graph 3: Latency Decomposition (Broadcast Time + Wait-for-Ref Time)."""
-        # For Loom, we use height H
-        # Broadcast Time = BROADCAST_END(H) - BLOCK_NEW(H)
-        # Wait-for-Ref Time = BLOCK_NEW(H+1) - BROADCAST_END(H)
+        """Calculate Graph 3: Latency Decomposition (per-node, then averaged).
 
+        For Loom, we use height H:
+        - Broadcast Time = BROADCAST_END(H) - BLOCK_NEW(H)
+        - Wait-for-Ref Time = BLOCK_NEW(H+1) - BROADCAST_END(H)
+        """
         # Group events by node
         block_new_by_node = {}
         broadcast_end_by_node = {}
@@ -241,50 +287,50 @@ class LogParser:
 
         for event in self.eval_metrics['broadcast_end']:
             height = event['height']
-            # Broadcast end doesn't have node in current format, assume node 0 or parse differently
-            # For now, we'll store by height only (assuming single-node or aggregate)
-            if 0 not in broadcast_end_by_node:
-                broadcast_end_by_node[0] = {}
-            broadcast_end_by_node[0][height] = event['ts_ns']
+            # BROADCAST_END logs include node info parsed from the log file context
+            # For now, we need to match by height with the corresponding node's BLOCK_NEW
+            # Store all broadcast_end events by height
+            if 'all' not in broadcast_end_by_node:
+                broadcast_end_by_node['all'] = {}
+            broadcast_end_by_node['all'][height] = event['ts_ns']
 
-        latency_data = []
+        per_node_latency = {}
 
         for node, heights in block_new_by_node.items():
-            broadcast_ends = broadcast_end_by_node.get(node, broadcast_end_by_node.get(0, {}))
+            broadcast_ends = broadcast_end_by_node.get(node, broadcast_end_by_node.get('all', {}))
             sorted_heights = sorted(heights.keys())
+
+            node_broadcast_times = []
+            node_wait_times = []
 
             for i, h in enumerate(sorted_heights):
                 block_new_ts = heights[h]
                 broadcast_end_ts = broadcast_ends.get(h)
 
-                broadcast_time_ns = None
-                wait_for_ref_ns = None
-
                 if broadcast_end_ts:
                     broadcast_time_ns = broadcast_end_ts - block_new_ts
+                    node_broadcast_times.append(broadcast_time_ns)
 
-                # Wait-for-ref: time from BROADCAST_END(H) to BLOCK_NEW(H+1)
-                if broadcast_end_ts and (h + 1) in heights:
-                    next_block_new_ts = heights[h + 1]
-                    wait_for_ref_ns = next_block_new_ts - broadcast_end_ts
+                    # Wait-for-ref: time from BROADCAST_END(H) to BLOCK_NEW(H+1)
+                    if (h + 1) in heights:
+                        next_block_new_ts = heights[h + 1]
+                        wait_for_ref_ns = next_block_new_ts - broadcast_end_ts
+                        node_wait_times.append(wait_for_ref_ns)
 
-                latency_data.append({
-                    'node': node,
-                    'height': h,
-                    'broadcast_time_ns': broadcast_time_ns,
-                    'wait_for_ref_ns': wait_for_ref_ns,
-                    'broadcast_time_ms': broadcast_time_ns / 1e6 if broadcast_time_ns else None,
-                    'wait_for_ref_ms': wait_for_ref_ns / 1e6 if wait_for_ref_ns else None,
-                })
+            per_node_latency[node] = {
+                'avg_broadcast_time_ms': mean(node_broadcast_times) / 1e6 if node_broadcast_times else 0,
+                'avg_wait_for_ref_ms': mean(node_wait_times) / 1e6 if node_wait_times else 0,
+                'num_samples': len(node_broadcast_times),
+            }
 
-        # Calculate averages
-        broadcast_times = [d['broadcast_time_ns'] for d in latency_data if d['broadcast_time_ns'] is not None]
-        wait_times = [d['wait_for_ref_ns'] for d in latency_data if d['wait_for_ref_ns'] is not None]
+        # Calculate overall averages across nodes
+        all_broadcast = [d['avg_broadcast_time_ms'] for d in per_node_latency.values() if d['num_samples'] > 0]
+        all_wait = [d['avg_wait_for_ref_ms'] for d in per_node_latency.values() if d['num_samples'] > 0]
 
         return {
-            'latency_data': latency_data,
-            'avg_broadcast_time_ms': mean(broadcast_times) / 1e6 if broadcast_times else 0,
-            'avg_wait_for_ref_ms': mean(wait_times) / 1e6 if wait_times else 0,
+            'avg_broadcast_time_ms': mean(all_broadcast) if all_broadcast else 0,
+            'avg_wait_for_ref_ms': mean(all_wait) if all_wait else 0,
+            'per_node_latency': per_node_latency,
         }
 
     def result(self):
@@ -321,12 +367,12 @@ class LogParser:
             f' End-to-end TPS: {round(end_to_end_tps):,} tx/s\n'
             f' End-to-end latency: {round(end_to_end_latency):,} ms\n'
             '\n'
-            ' + EVAL METRICS (Graph 1 - Wave Efficiency):\n'
-            f' Total Comm. Rounds: {graph1["total_comm_rounds"]}\n'
-            f' Total Blocks: {graph1["total_blocks"]}\n'
-            f' Comm. Rounds per Block: {graph1["comm_rounds_per_block"]:.2f}\n'
+            ' + EVAL METRICS (Graph 1 - Wave Efficiency, per node avg):\n'
+            f' Avg Comm. Rounds per Node: {graph1["avg_comm_rounds_per_node"]:.1f}\n'
+            f' Avg Blocks per Node: {graph1["avg_blocks_per_node"]:.1f}\n'
+            f' Avg Comm. Rounds per Block: {graph1["avg_comm_rounds_per_block"]:.2f}\n'
             '\n'
-            ' + EVAL METRICS (Graph 3 - Latency Decomposition):\n'
+            ' + EVAL METRICS (Graph 3 - Latency Decomposition, per node avg):\n'
             f' Avg Broadcast Time: {graph3["avg_broadcast_time_ms"]:.2f} ms\n'
             f' Avg Wait-for-Ref Time: {graph3["avg_wait_for_ref_ms"]:.2f} ms\n'
             '-----------------------------------------\n'

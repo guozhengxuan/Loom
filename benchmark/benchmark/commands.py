@@ -25,7 +25,7 @@ class CommandMaker:
     
     @staticmethod
     def compile():
-        return 'go build -a ../main.go'
+        return 'go build ../main.go'
 
     @staticmethod
     def generate_key(path,nodes):

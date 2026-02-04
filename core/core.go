@@ -112,9 +112,11 @@ func (corer *Core) propose(height, round, oldFirstRefH int) error {
 func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error) {
 	logger.Debug.Printf("processing generateBlock height %d round %d\n", height, round)
 
-	// [EVAL] Broadcast Time End (For Loom, this marks the end of the previous "broadcast interval")
-	// As per definition: interval between successive invocations.
-	logger.Info.Printf("[EVAL] BROADCAST_END height %d round %d ts %d\n", height, round, time.Now().UnixNano())
+	// [EVAL] Broadcast End for PREVIOUS block (height-1)
+	// This marks when 2f+1 echoes were received for block H-1, triggering this new block H
+	if height > 0 {
+		logger.Info.Printf("[EVAL] BROADCAST_END height %d ts %d\n", height-1, time.Now().UnixNano())
+	}
 
 	// Request refs from dag.
 	respCh := make(chan []Header)
