@@ -115,7 +115,7 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 	// [EVAL] Broadcast End for PREVIOUS block (height-1)
 	// This marks when 2f+1 echoes were received for block H-1, triggering this new block H
 	if height > 0 {
-		logger.Info.Printf("[EVAL] BROADCAST_END height %d ts %d\n", height-1, time.Now().UnixNano())
+		logger.Info.Printf("[EVAL] BROADCAST_END node %d height %d ts %d\n", corer.nodeID, height-1, time.Now().UnixNano())
 	}
 
 	// Request refs from dag.
@@ -124,7 +124,7 @@ func (corer *Core) generateBlock(height, round, oldFirstRefH int) (*Block, error
 	ref := <-respCh
 
 	// [EVAL] Comm Cost (2 for Loom)
-	logger.Info.Printf("[EVAL] COMM_COST val=2 height %d round %d ts %d\n", height, round, time.Now().UnixNano())
+	logger.Info.Printf("[EVAL] COMM_COST node %d val=2 height %d round %d ts %d\n", corer.nodeID, height, round, time.Now().UnixNano())
 
 	// If collected n-f refs, enter a new round.
 	firstRefH := oldFirstRefH

@@ -106,15 +106,29 @@ class LogParser:
         }
 
         # --- Graph 1: Communication Rounds ---
-        # Loom format: [EVAL] COMM_COST val=2 height %d round %d ts %d
-        tmp_comm = findall(r'\[EVAL\] COMM_COST val=(\d+) height (\d+) round (\d+) ts (\d+)', log)
-        for val, h, r, ts in tmp_comm:
-            eval_metrics['comm_cost'].append({
-                'value': int(val),
-                'height': int(h),
-                'round': int(r),
-                'ts_ns': int(ts)
-            })
+        # Try new format first: [EVAL] COMM_COST node %d val=2 height %d round %d ts %d
+        tmp_comm_new = findall(r'\[EVAL\] COMM_COST node (\d+) val=(\d+) height (\d+) round (\d+) ts (\d+)', log)
+        if tmp_comm_new:
+            for n, val, h, r, ts in tmp_comm_new:
+                eval_metrics['comm_cost'].append({
+                    'node': int(n),
+                    'value': int(val),
+                    'height': int(h),
+                    'round': int(r),
+                    'ts_ns': int(ts)
+                })
+        else:
+            # Fall back to old format: [EVAL] COMM_COST val=2 height %d round %d ts %d
+            # Node will be inferred later from BLOCK_NEW
+            tmp_comm = findall(r'\[EVAL\] COMM_COST val=(\d+) height (\d+) round (\d+) ts (\d+)', log)
+            for val, h, r, ts in tmp_comm:
+                eval_metrics['comm_cost'].append({
+                    'node': None,  # Will be set after parsing BLOCK_NEW
+                    'value': int(val),
+                    'height': int(h),
+                    'round': int(r),
+                    'ts_ns': int(ts)
+                })
 
         # --- Graph 1: Round Advance ---
         # Loom format: [EVAL] ROUND_ADVANCED node %d old_round %d new_round %d ts %d
@@ -139,14 +153,36 @@ class LogParser:
             })
 
         # --- Graph 3: Broadcast End ---
-        # Loom format: [EVAL] BROADCAST_END height %d round %d ts %d
-        tmp_broadcast = findall(r'\[EVAL\] BROADCAST_END height (\d+) round (\d+) ts (\d+)', log)
-        for h, r, ts in tmp_broadcast:
-            eval_metrics['broadcast_end'].append({
-                'height': int(h),
-                'round': int(r),
-                'ts_ns': int(ts)
-            })
+        # Try new format first: [EVAL] BROADCAST_END node %d height %d ts %d
+        tmp_broadcast = findall(r'\[EVAL\] BROADCAST_END node (\d+) height (\d+) ts (\d+)', log)
+        if tmp_broadcast:
+            for n, h, ts in tmp_broadcast:
+                eval_metrics['broadcast_end'].append({
+                    'node': int(n),
+                    'height': int(h),
+                    'ts_ns': int(ts)
+                })
+        else:
+            # Fall back to old format: [EVAL] BROADCAST_END height %d ts %d
+            # Infer node from BLOCK_NEW events in same log file
+            inferred_node = None
+            if eval_metrics['block_new']:
+                inferred_node = eval_metrics['block_new'][0]['node']
+
+            tmp_broadcast_old = findall(r'\[EVAL\] BROADCAST_END height (\d+) ts (\d+)', log)
+            for h, ts in tmp_broadcast_old:
+                eval_metrics['broadcast_end'].append({
+                    'node': inferred_node,
+                    'height': int(h),
+                    'ts_ns': int(ts)
+                })
+
+        # Infer node for old COMM_COST logs (without node info)
+        if eval_metrics['block_new']:
+            inferred_node = eval_metrics['block_new'][0]['node']
+            for item in eval_metrics['comm_cost']:
+                if item['node'] is None:
+                    item['node'] = inferred_node
 
         return batchs, proposals, commits, configs, eval_metrics
 
@@ -286,18 +322,16 @@ class LogParser:
             block_new_by_node[node][height] = event['ts_ns']
 
         for event in self.eval_metrics['broadcast_end']:
+            node = event['node']
             height = event['height']
-            # BROADCAST_END logs include node info parsed from the log file context
-            # For now, we need to match by height with the corresponding node's BLOCK_NEW
-            # Store all broadcast_end events by height
-            if 'all' not in broadcast_end_by_node:
-                broadcast_end_by_node['all'] = {}
-            broadcast_end_by_node['all'][height] = event['ts_ns']
+            if node not in broadcast_end_by_node:
+                broadcast_end_by_node[node] = {}
+            broadcast_end_by_node[node][height] = event['ts_ns']
 
         per_node_latency = {}
 
         for node, heights in block_new_by_node.items():
-            broadcast_ends = broadcast_end_by_node.get(node, broadcast_end_by_node.get('all', {}))
+            broadcast_ends = broadcast_end_by_node.get(node, {})
             sorted_heights = sorted(heights.keys())
 
             node_broadcast_times = []
